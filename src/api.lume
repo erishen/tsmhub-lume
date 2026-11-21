@@ -119,6 +119,19 @@ func data_of(r) {
 // 响应按原样透传（content-type + 完整 body）；SSE 受 http_* 非流式限制，
 // 会等上游完成后一次性返回完整 event-stream（见 README「流式限制」）。
 
+// 路径安全（防御纵深）：/v1/* 的 path 客户端可控，正常应为 /v1/<…>。
+// 当前 Lume 在路由前规范化路径（/v1/../api/keys → /api/keys，落到管理路由，
+// 含写闸门），裸 ".." 不会逃逸到上游。但这里再拦一次：万一未来路由匹配用
+// 原始路径、或拼 URL 时未规范化，base() + path 会被上游库规范化成 /api/*，
+// 逃出 /v1/* 客户端空间。只放行 /v1/ 前缀且无 ".." 段。
+func client_path_ok(p) {
+  if (substr(p, 0, 4) != "/v1/") { return false; }
+  for (seg in split(p, "/")) {
+    if (seg == "..") { return false; }
+  }
+  return true;
+}
+
 // 请求头大小写不敏感取值（Lume req.headers 的键名大小写不定）。
 func header_ci(req, want) {
   let hs = get(req, "headers", null);
@@ -145,6 +158,10 @@ func upstream_v1(method, path, body, auth) {
 }
 
 export func client_proxy(method, path, req) {
+  // 拒绝路径穿越（防御纵深）：客户端不应在 /v1/* 用 ".."。
+  if (!client_path_ok(path)) {
+    return { status: 400, type: "application/json", body: stringify({ error: "invalid path" }) };
+  }
   // Lume 不把 Authorization 暴露给脚本层（它解析进专用字段做 Basic Auth）。
   // 客户端 Key 从 X-Api-Key 头取（上游 authenticate 原生支持）；回退 ?api_key=。
   let auth = header_ci(req, "x-api-key");
@@ -179,12 +196,16 @@ export func client_proxy(method, path, req) {
 // 与 client_proxy 的区别：不缓冲整响应（SSE/长响应首字节更快、内存 O(块)）。
 // 需要 lume ≥ 含 proxy_stream 的信封（v0.14 工作树）；旧版退回 client_proxy。
 export func client_stream(method, req) {
+  let path = str(get(req, "path", "/v1/"));
+  // 拒绝路径穿越（防御纵深）：客户端不应在 /v1/* 用 ".."。
+  if (!client_path_ok(path)) {
+    return { status: 400, type: "application/json", body: stringify({ error: "invalid path" }) };
+  }
   let auth = header_ci(req, "x-api-key");
   if (len(auth) == 0) {
     auth = str(get(get(req, "query_params", {}), "api_key", ""));
   }
   if (len(auth) == 0) { auth = client_key(); }
-  let path = str(get(req, "path", "/v1/"));
   let m = { url: base() + path, method: method, timeout: 300, allow_private: true };
   put(m, "headers", { "Accept": "application/json", "Authorization": "Bearer " + auth });
   let b = get(req, "body", null);

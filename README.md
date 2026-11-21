@@ -190,6 +190,7 @@ LLM 应用/客户端  --X-Api-Key: sk-tr-…-->  Lume /v1/*  --透传-->  tsm-hu
 | 端点 | 整个 `/v1/*` 空间透传：`chat/completions`、`models`、`tools`、`tools/invoke`、`skills`、`mcps` |
 | 与管理面隔离 | `/v1/*` 不走 `?role=` 闸门——这是客户端 API；管理面 `/api/*` 才走闸门 |
 | Key 来源 | 客户端 `X-Api-Key` 头 → 未带则 `?api_key=` → 未带则回退服务端 `TSM_CLIENT_KEY` |
+| 路径边界 | `/v1/*` 只接受 `/v1/` 前缀且无 `..` 路径段；Lume 在路由前规范化路径（`/v1/../api/keys` → `/api/keys`，落到管理路由含闸门），`client_path_ok` 再拦一次作防御纵深 |
 
 > ⚠️ **Lume 不把 `Authorization` 头暴露给脚本层**（它解析进专用字段做 Basic Auth），
 > 所以客户端 Key 要用 `X-Api-Key` 头（上游 `authenticate` 原生支持），而非
