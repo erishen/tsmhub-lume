@@ -176,21 +176,32 @@ make stop        # 停掉 8097 上的服务
 
 ## 写操作闸门（lume-core）
 
-`src/guard.lume` import `vendor/lume-core/lib/approval.lume`，用它的**职责分离**模型：
+`src/guard.lume` import `vendor/lume-core/lib/approval.lume`，用它的**职责分离（SoD）**模型。
+动作是**互斥的**（不是等级包含）：执行者没有审批权，终审者不直接执行。
 
 | 角色 | 可执行的动作 |
 | --- | --- |
-| `agent_operator` | `execute`（改 Provider / 路由 / Key、探测、刷新） |
-| `human_admin` | `approve`（删除、清空、改全局设置） |
+| `agent_operator` | `execute`（改 Provider / 路由 / Key、调用工具、探测、刷新） |
+| `agent_reviewer` | `review_first`（一审） |
+| `agent_reviewer_second` | `review_second`（二审） |
+| `human_admin` | `approve`（删除、清空、改全局设置）、`override`、`audit` |
 
 | 模式 | 行为 |
 | --- | --- |
 | `off`（默认） | 不校验，单人开发 |
-| `execute` | 可逆写操作需 `agent_operator`；不可逆操作仍需 `human_admin` |
+| `execute` | 可逆写操作（execute）需 `agent_operator`；不可逆操作（approve）需 `human_admin` |
 | `approve` | 所有写操作都需 `human_admin` |
+
+> ⚠️ **SoD 互斥**：`human_admin` **没有** `execute`——终审者不绕过流程直接执行。所以
+> `execute` 模式下，常规写（改 Provider/Key、调用工具、刷新）必须用 `agent_operator`，
+> 不可逆写（删/清空/改设置）必须用 `human_admin`，由前端顶栏角色选择器切换。
+> 对**多角色团队**这是正确分工；单管理员控制台可保持 `off` 或用 `approve` 模式。
 
 角色由前端顶栏选择器放进 `?role=` 查询参数（Lume 的 `req` 不暴露请求头）。这是**流程门禁**，
 不是身份认证——真正的身份边界交给 `HTPASSWD_FILE` 或反向代理。
+
+**生产建议**：通过 `.env` 设 `TSM_WRITE_GATE=execute`（已 gitignore，不随镜像/仓库发布）；
+多用户环境再加 `HTPASSWD_FILE` 做 Basic Auth，身份与流程两层都齐。
 
 ## 控制台页面
 
