@@ -173,6 +173,33 @@ make stop        # 停掉 8097 上的服务
 | `GET /api/sandbox/status` / `/api/platforms` | 沙箱 / 上游平台 |
 | `GET /api/settings` / `POST /api/settings` | 全局设置读取 / 更新（approve） |
 | `POST /api/chat` | Playground：经服务端注入 `sk-tr-` Key 打 `/v1/chat/completions` |
+| `GET/POST /v1/*` | **token 转发服务**：LLM 客户端 API，`X-Api-Key` 透传到上游 `/v1/*` |
+
+## token 转发服务（`/v1/*`）
+
+Lume 同时是 tsm-hub 的 **LLM 客户端入口**：客户端用自己的 `sk-tr-` Key 直连
+Lume `/v1/*`，Lume 把请求原样转发到上游（Key 鉴权 + 智能路由 + 转发都由上游做）。
+
+```
+LLM 应用/客户端  --X-Api-Key: sk-tr-…-->  Lume /v1/*  --透传-->  tsm-hub /v1/*
+```
+
+| 项 | 说明 |
+| --- | --- |
+| 鉴权 | 在上游做。Lume 只透传 `X-Api-Key` 头（或 `?api_key=` 回退），无 Key → 上游 401 |
+| 端点 | 整个 `/v1/*` 空间透传：`chat/completions`、`models`、`tools`、`tools/invoke`、`skills`、`mcps` |
+| 与管理面隔离 | `/v1/*` 不走 `?role=` 闸门——这是客户端 API；管理面 `/api/*` 才走闸门 |
+| Key 来源 | 客户端 `X-Api-Key` 头 → 未带则 `?api_key=` → 未带则回退服务端 `TSM_CLIENT_KEY` |
+
+> ⚠️ **Lume 不把 `Authorization` 头暴露给脚本层**（它解析进专用字段做 Basic Auth），
+> 所以客户端 Key 要用 `X-Api-Key` 头（上游 `authenticate` 原生支持），而非
+> `Authorization: Bearer`。用 `Authorization` 直连 Lume 会拿不到 Key（401）。
+
+> ⚠️ **流式限制**：Lume 的 `http_*` 是非流式（等上游完整响应后一次性返回）。
+> `stream:true` 的 SSE **功能可用**（content-type `text/event-stream` + 完整
+> `data:` 事件 + `[DONE]`，OpenAI 客户端可正常解析），但**不是 token 级流式**：
+> 要等上游生成完毕才返回。长生成靠 `timeout: 300s` / `max_bytes: 32MB` 兜底。
+> 若需真流式，直接连 tsm-hub 原生 19070（不经 Lume）。
 
 ## 写操作闸门（lume-core）
 

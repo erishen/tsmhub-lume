@@ -11,8 +11,9 @@
 //   POST   /api/providers            新增/更新 Provider（execute）
 //   POST   /api/providers/probe      探测模型（execute）
 //   DELETE /api/providers/:id        删除 Provider（approve）
-//   GET    /api/routes /keys /usage /observability /audit-logs ...
+//   GET    /api/settings /api/providers /routes /keys /usage /observability /audit-logs ...
 //   POST   /api/chat                 可选 Playground（TSM_CLIENT_KEY）
+//   GET/POST /v1/*                    token 转发服务：LLM 客户端 API 透传到上游 /v1/*
 //
 // 环境变量见 .env.example / README.md。
 
@@ -350,6 +351,18 @@ post "/api/settings", (req) => {
 // ---- 可选 Playground：经服务端注入 sk-tr- Key ----
 post "/api/chat", (req) => {
   return api.chat(body_of(req));
+};
+
+// ---- 客户端 LLM API（token 转发服务）----
+// 整个 /v1/* 空间原样透传到上游：客户端用自己的 sk-tr- Key 直连 Lume
+// （Authorization / X-Api-Key），上游负责 Key 鉴权 + 智能路由 + 转发。
+// Lume 不做管理闸门（?role=）——这是客户端 API，鉴权在上游，与管理面分开。
+// 响应按原样透传（状态码 + content-type + body）。
+route "GET", "/v1/*", (req) => {
+  return api.client_proxy("GET", str(get(req, "path", "/v1/")), req);
+};
+route "POST", "/v1/*", (req) => {
+  return api.client_proxy("POST", str(get(req, "path", "/v1/")), req);
 };
 
 run();  // 注册窗口关闭，开始伺服

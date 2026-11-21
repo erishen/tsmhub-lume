@@ -46,6 +46,9 @@ if [ "$NO_UPSTREAM" = "0" ]; then
   check /api/routes
   check /api/keys
   check /api/usage
+
+  # token 转发服务：/v1/* 无 Key → 上游 401（Key 鉴权在上游，Lume 只透传）。
+  check /v1/models 401
 fi
 
 exit "$fail"

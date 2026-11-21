@@ -110,6 +110,71 @@ func data_of(r) {
   return d;
 }
 
+// ---- 客户端 API 透传（token 转发服务）----
+// Lume 作为 LLM 客户端入口：客户端用自己 sk-tr- Key 直连 Lume /v1/*，
+// 这里把客户端 Key 转发到上游 /v1/*（上游做 Key 鉴权/路由）。
+// 注意：Lume 不把 Authorization 头暴露给脚本层（解析进专用字段做 Basic Auth），
+// 所以客户端 Key 用 X-Api-Key 头（上游原生支持）或 ?api_key= 回退。
+// 客户端没带 Key 时回退服务端 TSM_CLIENT_KEY（Playground 兼容）。
+// 响应按原样透传（content-type + 完整 body）；SSE 受 http_* 非流式限制，
+// 会等上游完成后一次性返回完整 event-stream（见 README「流式限制」）。
+
+// 请求头大小写不敏感取值（Lume req.headers 的键名大小写不定）。
+func header_ci(req, want) {
+  let hs = get(req, "headers", null);
+  if (hs == null) { return ""; }
+  for (k in keys(hs)) {
+    if (lower(k) == want) { return str(get(hs, k, "")); }
+  }
+  return "";
+}
+
+// 透传转发：长生成/SSE 完整体放宽超时与上限。
+func upstream_v1(method, path, body, auth) {
+  let url = base() + path;
+  let hdrs = { "Accept": "application/json" };
+  if (len(auth) > 0) { put(hdrs, "Authorization", auth); }
+  if (body != null) { put(hdrs, "Content-Type", "application/json"); }
+  let opts = { headers: hdrs, timeout: 300, max_bytes: 33554432, allow_private: true };
+  if (body != null) { put(opts, "body", str(body)); }
+  if (method == "POST") { return http_post(url, opts); }
+  if (method == "PUT") { return http_put(url, opts); }
+  if (method == "PATCH") { return http_patch(url, opts); }
+  if (method == "DELETE") { return http_delete(url, opts); }
+  return http_get(url, opts);
+}
+
+export func client_proxy(method, path, req) {
+  // Lume 不把 Authorization 暴露给脚本层（它解析进专用字段做 Basic Auth）。
+  // 客户端 Key 从 X-Api-Key 头取（上游 authenticate 原生支持）；回退 ?api_key=。
+  let auth = header_ci(req, "x-api-key");
+  if (len(auth) == 0) {
+    auth = str(get(get(req, "query_params", {}), "api_key", ""));
+  }
+  if (len(auth) == 0) {
+    let k = client_key();
+    if (len(k) > 0) { auth = "Bearer " + k; }
+  } else {
+    auth = "Bearer " + auth;
+  }
+  let body = null;
+  let b = get(req, "body", null);
+  if (b != null) { body = str(b); }
+  let r = upstream_v1(method, path, body, auth);
+  let code = int(get(r, "status", 0));
+  let raw = get(r, "body", "");
+  if (code == 0) {
+    return {
+      status: 502,
+      type: "application/json",
+      body: stringify({ ok: false, error: "无法连接 tsm-hub 上游 " + base() + "：" + str(get(r, "err", "连接失败")) }),
+    };
+  }
+  let hdrs = get(r, "headers", {});
+  let ctype = str(get(hdrs, "content-type", "application/json"));
+  return { status: code, type: ctype, body: str(raw) };
+}
+
 // 管理端透传：保留上游状态码与 JSON 正文；连不上统一 502，前端读 error 字段。
 export func proxy(method, path, body) {
   let r = fetch_json(method, path, body, false);
