@@ -11,7 +11,7 @@
 # 本机与 CI 行为一致。想覆盖版本：--build-arg LUME_VERSION=vX.Y.Z。
 
 ARG NODE_IMAGE=node:20-alpine
-ARG LUME_VERSION=v0.13.1
+ARG LUME_VERSION=v0.14.1
 ARG RUNTIME_IMAGE=alpine:3.20
 
 # ---------- 阶段 1：React 控制台 ----------
@@ -26,7 +26,7 @@ RUN npm run build
 
 # ---------- 阶段 1b：lume 二进制（GitHub release，Linux x64 static） ----------
 FROM ${RUNTIME_IMAGE} AS lume-bin
-ARG LUME_VERSION=v0.13.1
+ARG LUME_VERSION=v0.14.1
 RUN apk add --no-cache curl tar \
  && curl -fsSL -o /tmp/lume.tgz "https://github.com/erishen/lume/releases/download/${LUME_VERSION}/lume-linux-x64-static.tar.gz" \
  && tar -xzf /tmp/lume.tgz -C /tmp \

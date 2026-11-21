@@ -195,11 +195,12 @@ LLM 应用/客户端  --X-Api-Key: sk-tr-…-->  Lume /v1/*  --透传-->  tsm-hu
 > 所以客户端 Key 要用 `X-Api-Key` 头（上游 `authenticate` 原生支持），而非
 > `Authorization: Bearer`。用 `Authorization` 直连 Lume 会拿不到 Key（401）。
 
-> ⚠️ **流式限制**：Lume 的 `http_*` 是非流式（等上游完整响应后一次性返回）。
-> `stream:true` 的 SSE **功能可用**（content-type `text/event-stream` + 完整
-> `data:` 事件 + `[DONE]`，OpenAI 客户端可正常解析），但**不是 token 级流式**：
-> 要等上游生成完毕才返回。长生成靠 `timeout: 300s` / `max_bytes: 32MB` 兜底。
-> 若需真流式，直接连 tsm-hub 原生 19070（不经 Lume）。
+> ✅ **流式（lume ≥ v0.14.1）**：`/v1/*` 用 `proxy_stream` 信封——Lume 连上游、
+> **读一块写一块**（真流式，不缓冲整响应）。`stream:true` 的 SSE 逐块到达
+> （首字节更快、内存 O(块)），OpenAI 客户端按正常 event-stream 消费。
+> Docker 用 v0.14.1（release 下载），本地 vendor 工作树同版，行为一致。
+> 早于 v0.14.1 的 lume 无 `proxy_stream` 信封，`/v1/*` 回退为非流式（等完整
+> 响应一次性返回，功能可用但非 token 级）；长生成靠 `timeout: 300s` 兜底。
 
 ## 写操作闸门（lume-core）
 

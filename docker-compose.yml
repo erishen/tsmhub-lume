@@ -14,7 +14,7 @@ services:
       context: .
       args:
         # lume 二进制从 GitHub release 下载（Dockerfile 里 ARG LUME_VERSION）。
-        LUME_VERSION: ${LUME_VERSION:-v0.13.1}
+        LUME_VERSION: ${LUME_VERSION:-v0.14.1}
     image: tsmhub-lume:dev
     container_name: tsmhub-lume
     ports:

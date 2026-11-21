@@ -355,14 +355,15 @@ post "/api/chat", (req) => {
 
 // ---- 客户端 LLM API（token 转发服务）----
 // 整个 /v1/* 空间原样透传到上游：客户端用自己的 sk-tr- Key 直连 Lume
-// （Authorization / X-Api-Key），上游负责 Key 鉴权 + 智能路由 + 转发。
-// Lume 不做管理闸门（?role=）——这是客户端 API，鉴权在上游，与管理面分开。
-// 响应按原样透传（状态码 + content-type + body）。
+// （X-Api-Key 头 / ?api_key=），上游负责 Key 鉴权 + 智能路由 + 转发。
+// 流式（proxy_stream 信封，真流式）：读一块写一块，SSE/长响应不缓冲。
+// 与管理面隔离：/v1/* 不走 ?role= 闸门——这是客户端 API，鉴权在上游。
+// 注意：Lume 不把 Authorization 头暴露给脚本层，故客户端 Key 用 X-Api-Key。
 route "GET", "/v1/*", (req) => {
-  return api.client_proxy("GET", str(get(req, "path", "/v1/")), req);
+  return api.client_stream("GET", req);
 };
 route "POST", "/v1/*", (req) => {
-  return api.client_proxy("POST", str(get(req, "path", "/v1/")), req);
+  return api.client_stream("POST", req);
 };
 
 run();  // 注册窗口关闭，开始伺服

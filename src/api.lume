@@ -175,6 +175,23 @@ export func client_proxy(method, path, req) {
   return { status: code, type: ctype, body: str(raw) };
 }
 
+// 流式透传（proxy_stream 信封，真流式）：把 /v1/* 请求转发到上游并逐块回传。
+// 与 client_proxy 的区别：不缓冲整响应（SSE/长响应首字节更快、内存 O(块)）。
+// 需要 lume ≥ 含 proxy_stream 的信封（v0.14 工作树）；旧版退回 client_proxy。
+export func client_stream(method, req) {
+  let auth = header_ci(req, "x-api-key");
+  if (len(auth) == 0) {
+    auth = str(get(get(req, "query_params", {}), "api_key", ""));
+  }
+  if (len(auth) == 0) { auth = client_key(); }
+  let path = str(get(req, "path", "/v1/"));
+  let m = { url: base() + path, method: method, timeout: 300, allow_private: true };
+  put(m, "headers", { "Accept": "application/json", "Authorization": "Bearer " + auth });
+  let b = get(req, "body", null);
+  if (b != null) { put(m, "body", str(b)); }
+  return { proxy_stream: m };
+}
+
 // 管理端透传：保留上游状态码与 JSON 正文；连不上统一 502，前端读 error 字段。
 export func proxy(method, path, body) {
   let r = fetch_json(method, path, body, false);
