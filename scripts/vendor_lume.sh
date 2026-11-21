@@ -64,6 +64,14 @@ if [ -x "$LOCAL_LUME/bin/lume" ] && [ -d "$LOCAL_CORE/lib" ]; then
     echo "lib_files=$(ls "$CORE_LIB" | wc -l | tr -d ' ')"
   } > "$STAMP"
 else
+  # release 缓存命中：stamp 记录 source=release + 版本一致，且二进制/库都在，则跳过下载。
+  # 本地开发走上面的 local-checkout 分支（stamp 不匹配 source=release），行为不变。
+  if [ -x "$LUME_BIN" ] && [ -f "$CORE_LIB/approval.lume" ] && [ -f "$STAMP" ] \
+     && grep -q "source=release" "$STAMP" && grep -q "bin=${LUME_VERSION}" "$STAMP" \
+     && grep -q "lib_tag=${LUME_CORE_TAG}" "$STAMP"; then
+    echo "▶ vendor 已就绪（release ${LUME_VERSION} 缓存命中，跳过下载）"
+    exit 0
+  fi
   case "$(uname -s)" in
     Darwin) os=darwin ;;
     Linux) os=linux ;;

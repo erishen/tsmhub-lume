@@ -26,6 +26,16 @@ jobs:
           node-version: 20
           cache: npm
 
+      # vendor/lume/bin/lume + lume-core/lib 由 make vendor 从 release 拉取；
+      # 脚本带幂等跳过（stamp 版本匹配即复用），这里缓存避免 CI 反复下载。
+      - name: 缓存 lume 二进制 + lume-core
+        uses: actions/cache@v4
+        with:
+          path: |
+            vendor/lume/bin/lume
+            vendor/lume-core/lib
+          key: lume-vendor-${{ hashFiles('scripts/vendor_lume.sh') }}
+
       - name: 同步 lume 二进制 + lume-core（release fallback）
         run: make vendor
 

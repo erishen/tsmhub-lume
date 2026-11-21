@@ -86,14 +86,15 @@ export function App() {
             <div className="brand-sub">Lume 控制台</div>
           </div>
         </div>
-        <nav>
+        <nav aria-label="主导航">
           {NAV.map((n) => (
             <button
               key={n.key}
               className={n.key === route ? 'nav-item active' : 'nav-item'}
               onClick={() => navigate(n.key)}
+              aria-current={n.key === route ? 'page' : undefined}
             >
-              <span className="nav-icon">{n.icon}</span>
+              <span className="nav-icon" aria-hidden="true">{n.icon}</span>
               {n.label}
             </button>
           ))}
@@ -107,16 +108,16 @@ export function App() {
 
       <div className="main">
         <header className="topbar">
-          <button className="menu-btn" onClick={() => setMenuOpen(!menuOpen)}>☰</button>
+          <button className="menu-btn" onClick={() => setMenuOpen(!menuOpen)} aria-label={menuOpen ? '关闭菜单' : '打开菜单'} aria-expanded={menuOpen}>☰</button>
           <div className="topbar-title">
             {NAV.find((n) => n.key === route)?.label}
           </div>
           <div className="topbar-right">
-            <span className={health?.ok ? 'health-dot ok' : 'health-dot err'} title={health?.error || ''} />
+            <span className={health?.ok ? 'health-dot ok' : 'health-dot err'} role="status" aria-label={health?.ok ? '上游正常' : '上游异常'} title={health?.error || ''} />
             <span className="tiny mono">{health?.ok ? '上游正常' : '上游异常'}</span>
             <label className="role-pick">
               <span className="tiny">角色</span>
-              <select value={role} onChange={(e) => changeRole(e.target.value)}>
+              <select value={role} onChange={(e) => changeRole(e.target.value)} aria-label="操作角色">
                 {ROLES.map((r) => (
                   <option key={r} value={r}>{ROLE_LABEL[r]}</option>
                 ))}
