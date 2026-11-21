@@ -99,6 +99,7 @@ export func fetch_json(method, path, body, use_client) {
     ok: ok,
     status: code,
     data: data,
+    raw: text,
     err: str(get(r, "err", "")),
     parse_err: parse_err,
   };
@@ -232,7 +233,10 @@ export func proxy(method, path, body) {
       body: { ok: false, error: "上游返回了非 JSON 响应（HTTP " + str(code) + "）" },
     };
   }
-  return { status: code, body: get(r, "data") };
+  // 原样透传上游 JSON 文本（不重序列化）：lume stringify 的 %g 只保留 6 位
+  // 有效数字，重序列化会截断浮点（cost_usd 2.141205 → 2.1412）。raw 是上游
+  // 原始 body，浮点精度完整。
+  return { status: code, body: str(get(r, "raw", "")) };
 }
 
 // Playground：用可选客户端 Key 打 /v1/chat/completions（非流式）。
