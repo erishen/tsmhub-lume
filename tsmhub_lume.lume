@@ -1,0 +1,355 @@
+// tsmhub_lume.lume — tsm-hub 的 Lume BFF + React 控制台
+//
+// 形态：Lume 单进程 = 静态站（www/）+ SPA 回退 + 同源 JSON API。
+// 浏览器不直连 tsm-hub：所有 /api/* 在这里转发/聚合，管理口令留在服务端。
+//
+//   GET    /                         React 控制台
+//   GET    /api/health               本服务 + 上游 tsm-hub 健康检查
+//   GET    /api/meta                 上游地址 + 写操作闸门策略
+//   GET    /api/overview             首屏聚合（概览/告警/健康/审计）
+//   GET    /api/providers            上游 Provider 列表
+//   POST   /api/providers            新增/更新 Provider（execute）
+//   POST   /api/providers/probe      探测模型（execute）
+//   DELETE /api/providers/:id        删除 Provider（approve）
+//   GET    /api/routes /keys /usage /observability /audit-logs ...
+//   POST   /api/chat                 可选 Playground（TSM_CLIENT_KEY）
+//
+// 环境变量见 .env.example / README.md。
+
+let lc_bind = env("LUME_BIND");
+if (lc_bind == null) { lc_bind = "127.0.0.1"; }
+let lc_port = env("LUME_PORT");
+if (lc_port == null) { lc_port = "8097"; }
+
+server {
+  port = int(lc_port);
+  workers = 2;
+  bind = str(lc_bind);
+  docroot = "./www";
+  spa = true;                       // history 路由：GET + 静态 404 → www/index.html
+  htpasswd = env("HTPASSWD_FILE");  // 本地留空 = 无认证；对外部署注入即开 Basic Auth
+};
+
+import "src/api.lume" as api;
+import "src/guard.lume" as guard;
+
+// 原样转发查询串（?days= &limit= &offset= &role= …）。
+func qs(req) {
+  let raw = get(req, "query", "");
+  if (raw == null) { return ""; }
+  let s = str(raw);
+  if (len(s) == 0) { return ""; }
+  return "?" + s;
+}
+
+// 转发请求体；空体补 "{}"，tsm-hub 的 handler 都接受可空 body。
+func body_of(req) {
+  let b = get(req, "body", null);
+  if (b == null) { return "{}"; }
+  let s = str(b);
+  if (len(s) == 0) { return "{}"; }
+  return s;
+}
+
+// 闸门拒绝时的统一 403 响应。
+func deny(g) {
+  return {
+    status: 403,
+    body: { ok: false, error: str(get(g, "reason", "写操作被审批闸门拒绝")), gate: g },
+  };
+}
+
+// ---- 健康 / 元信息 / 首屏 ----
+get "/api/health", (req) => {
+  return api.health();
+};
+
+get "/api/meta", (req) => {
+  return {
+    service: "tsmhub-lume",
+    upstream: api.base(),
+    gate: guard.policy(),
+    playground: { client_key: api.client_key_set() },
+  };
+};
+
+get "/api/overview", (req) => {
+  return api.overview();
+};
+
+// ---- Providers ----
+get "/api/providers", (req) => {
+  return api.proxy("GET", "/api/admin/providers" + qs(req), null);
+};
+
+get "/api/balances", (req) => {
+  return api.proxy("GET", "/api/admin/providers/balances" + qs(req), null);
+};
+
+get "/api/models", (req) => {
+  return api.proxy("GET", "/api/admin/models/catalog" + qs(req), null);
+};
+
+get "/api/models/recommendations", (req) => {
+  return api.proxy("GET", "/api/admin/models/recommendations" + qs(req), null);
+};
+
+post "/api/providers/probe", (req) => {
+  let g = guard.check(req, "execute");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("POST", "/api/admin/providers/probe" + qs(req), body_of(req));
+};
+
+post "/api/providers", (req) => {
+  let g = guard.check(req, "execute");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("POST", "/api/admin/providers" + qs(req), body_of(req));
+};
+
+delete "/api/providers/:id", (req) => {
+  let g = guard.check(req, "approve");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  let id = str(get(req.params, "id", ""));
+  return api.proxy("DELETE", "/api/admin/providers/" + id + qs(req), null);
+};
+
+// ---- 路由表 ----
+get "/api/routes", (req) => {
+  return api.proxy("GET", "/api/admin/routes" + qs(req), null);
+};
+
+post "/api/routes", (req) => {
+  let g = guard.check(req, "execute");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("POST", "/api/admin/routes" + qs(req), body_of(req));
+};
+
+delete "/api/routes/:model", (req) => {
+  let g = guard.check(req, "approve");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  let model = str(get(req.params, "model", ""));
+  return api.proxy("DELETE", "/api/admin/routes/" + model + qs(req), null);
+};
+
+// ---- Keys ----
+get "/api/keys", (req) => {
+  return api.proxy("GET", "/api/admin/keys" + qs(req), null);
+};
+
+post "/api/keys", (req) => {
+  let g = guard.check(req, "execute");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("POST", "/api/admin/keys" + qs(req), body_of(req));
+};
+
+post "/api/keys/:id/toggle", (req) => {
+  let g = guard.check(req, "execute");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  let id = str(get(req.params, "id", ""));
+  return api.proxy("POST", "/api/admin/keys/" + id + "/toggle" + qs(req), body_of(req));
+};
+
+delete "/api/keys/:id", (req) => {
+  let g = guard.check(req, "approve");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  let id = str(get(req.params, "id", ""));
+  return api.proxy("DELETE", "/api/admin/keys/" + id + qs(req), null);
+};
+
+// ---- 用量 / 监控 / 审计 ----
+get "/api/usage", (req) => {
+  return api.proxy("GET", "/api/admin/usage" + qs(req), null);
+};
+
+post "/api/usage/clear", (req) => {
+  let g = guard.check(req, "approve");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("POST", "/api/admin/usage/clear" + qs(req), body_of(req));
+};
+
+get "/api/observability", (req) => {
+  return api.proxy("GET", "/api/admin/observability/overview" + qs(req), null);
+};
+
+get "/api/audit-logs", (req) => {
+  return api.proxy("GET", "/api/admin/audit-logs" + qs(req), null);
+};
+
+get "/api/cost-warnings", (req) => {
+  return api.proxy("GET", "/api/admin/cost-warnings" + qs(req), null);
+};
+
+// ---- 能力池 ----
+get "/api/tools", (req) => {
+  return api.proxy("GET", "/api/admin/tools" + qs(req), null);
+};
+
+get "/api/skills", (req) => {
+  return api.proxy("GET", "/api/admin/skills" + qs(req), null);
+};
+
+get "/api/mcps", (req) => {
+  return api.proxy("GET", "/api/admin/mcps" + qs(req), null);
+};
+
+get "/api/fastpath", (req) => {
+  return api.proxy("GET", "/api/admin/fastpath" + qs(req), null);
+};
+
+get "/api/a2a/overview", (req) => {
+  return api.proxy("GET", "/api/admin/a2a/overview" + qs(req), null);
+};
+
+get "/api/sandbox/status", (req) => {
+  return api.proxy("GET", "/api/admin/sandbox/status" + qs(req), null);
+};
+
+get "/api/platforms", (req) => {
+  return api.proxy("GET", "/api/admin/upstream-platforms" + qs(req), null);
+};
+
+// ---- 能力池写操作（execute/approve 闸门）----
+post "/api/tools/invoke", (req) => {
+  let g = guard.check(req, "execute");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("POST", "/api/admin/tools/invoke" + qs(req), body_of(req));
+};
+
+get "/api/a2a/tasks", (req) => {
+  return api.proxy("GET", "/api/admin/a2a/tasks" + qs(req), null);
+};
+
+post "/api/fastpath/:name/promote", (req) => {
+  let g = guard.check(req, "approve");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  let name = str(get(req.params, "name", ""));
+  return api.proxy("POST", "/api/admin/fastpath/" + name + "/promote" + qs(req), body_of(req));
+};
+
+delete "/api/fastpath/:name", (req) => {
+  let g = guard.check(req, "approve");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  let name = str(get(req.params, "name", ""));
+  return api.proxy("DELETE", "/api/admin/fastpath/" + name + qs(req), null);
+};
+
+post "/api/mcps/:name", (req) => {
+  let g = guard.check(req, "execute");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  let name = str(get(req.params, "name", ""));
+  return api.proxy("POST", "/api/admin/mcps/" + name + qs(req), body_of(req));
+};
+
+delete "/api/mcps/:name", (req) => {
+  let g = guard.check(req, "execute");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  let name = str(get(req.params, "name", ""));
+  return api.proxy("DELETE", "/api/admin/mcps/" + name + qs(req), null);
+};
+
+get "/api/keys/:id/plaintext", (req) => {
+  let g = guard.check(req, "approve");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  let id = str(get(req.params, "id", ""));
+  return api.proxy("GET", "/api/admin/keys/" + id + "/plaintext" + qs(req), null);
+};
+
+patch "/api/keys/:id", (req) => {
+  let g = guard.check(req, "execute");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  let id = str(get(req.params, "id", ""));
+  return api.proxy("PATCH", "/api/admin/keys/" + id + qs(req), body_of(req));
+};
+
+// ---- 模型目录刷新 / 技能详情 / A2A 调用 / 内存 ----
+post "/api/models/refresh", (req) => {
+  let g = guard.check(req, "execute");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("POST", "/api/admin/models/refresh" + qs(req), body_of(req));
+};
+
+get "/api/skills/:name", (req) => {
+  return api.proxy("GET", "/api/admin/skills/" + str(get(req.params, "name", "")) + qs(req), null);
+};
+
+post "/api/a2a/invoke", (req) => {
+  let g = guard.check(req, "execute");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("POST", "/api/admin/a2a/invoke" + qs(req), body_of(req));
+};
+
+get "/api/memory", (req) => {
+  return api.proxy("GET", "/api/admin/memory" + qs(req), null);
+};
+
+delete "/api/memory", (req) => {
+  let g = guard.check(req, "approve");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("DELETE", "/api/admin/memory" + qs(req), null);
+};
+
+// ---- 外部能力采纳（candidates/adopt/suggest/ignore）----
+get "/api/external-tools", (req) => {
+  return api.proxy("GET", "/api/admin/external-tools" + qs(req), null);
+};
+
+post "/api/external-tools/:name/adopt", (req) => {
+  let g = guard.check(req, "approve");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("POST", "/api/admin/external-tools/" + str(get(req.params, "name", "")) + "/adopt" + qs(req), body_of(req));
+};
+
+delete "/api/external-tools/:name", (req) => {
+  let g = guard.check(req, "approve");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("DELETE", "/api/admin/external-tools/" + str(get(req.params, "name", "")) + qs(req), null);
+};
+
+get "/api/external-skills/candidates", (req) => {
+  return api.proxy("GET", "/api/admin/external-skills/candidates" + qs(req), null);
+};
+
+get "/api/external-mcps/candidates", (req) => {
+  return api.proxy("GET", "/api/admin/external-mcps/candidates" + qs(req), null);
+};
+
+post "/api/external-mcps/suggest", (req) => {
+  let g = guard.check(req, "approve");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("POST", "/api/admin/external-mcps/suggest" + qs(req), body_of(req));
+};
+
+post "/api/external-mcps/:server/adopt", (req) => {
+  let g = guard.check(req, "approve");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("POST", "/api/admin/external-mcps/" + str(get(req.params, "server", "")) + "/adopt" + qs(req), body_of(req));
+};
+
+delete "/api/external-mcps/:server", (req) => {
+  let g = guard.check(req, "approve");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("DELETE", "/api/admin/external-mcps/" + str(get(req.params, "server", "")) + qs(req), null);
+};
+
+post "/api/fastpath/generate", (req) => {
+  let g = guard.check(req, "approve");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("POST", "/api/admin/fastpath/generate" + qs(req), body_of(req));
+};
+
+get "/api/settings", (req) => {
+  return api.proxy("GET", "/api/admin/settings" + qs(req), null);
+};
+
+post "/api/settings", (req) => {
+  let g = guard.check(req, "approve");
+  if (not get(g, "allowed", false)) { return deny(g); }
+  return api.proxy("POST", "/api/admin/settings" + qs(req), body_of(req));
+};
+
+// ---- 可选 Playground：经服务端注入 sk-tr- Key ----
+post "/api/chat", (req) => {
+  return api.chat(body_of(req));
+};
+
+run();  // 注册窗口关闭，开始伺服

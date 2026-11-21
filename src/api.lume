@@ -1,0 +1,198 @@
+// src/api.lume — tsm-hub 上游客户端
+//
+// 浏览器只跟 Lume 同源通信；tsm-hub 的管理口令只存在于服务端（TSM_ADMIN
+// 或 TSM_ADMIN_FILE），不会下发到前端，也不出现在进程命令行里。
+//
+//   TSM_BASE         上游地址，默认 http://127.0.0.1:9070
+//   TSM_ADMIN        上游管理口令（X-Admin-Token）
+//   TSM_ADMIN_FILE   从文件读口令，优先于 TSM_ADMIN（换行会被裁掉）
+//   TSM_CLIENT_KEY   可选：Playground 用的 sk-tr-… 客户端 Key
+//
+// 变量名不能叫 TSM_ADMIN_TOKEN：Lume 的 env() 会屏蔽名字里含 TOKEN /
+// SECRET / API_KEY / PASSWORD / CREDENTIAL 的变量，那些名字在 DSL 里恒为 null。
+// 上游是回环/私网地址，http_* 默认拒绝，因此显式 allow_private: true。
+
+export func base() {
+  let b = env("TSM_BASE");
+  if (b == null) { return "http://127.0.0.1:9070"; }
+  let s = str(b);
+  if (len(s) == 0) { return "http://127.0.0.1:9070"; }
+  // 去掉末尾斜杠，避免拼出 "//api/admin/..."。
+  if (substr(s, len(s) - 1) == "/") { return substr(s, 0, len(s) - 1); }
+  return s;
+}
+
+func trim_ws(s) {
+  let out = s;
+  while (len(out) > 0) {
+    let last = substr(out, len(out) - 1);
+    if (last == "\n" or last == "\r" or last == " " or last == "\t") {
+      out = substr(out, 0, len(out) - 1);
+    } else { break; }
+  }
+  while (len(out) > 0) {
+    let first = substr(out, 0, 1);
+    if (first == " " or first == "\t") { out = substr(out, 1); } else { break; }
+  }
+  return out;
+}
+
+func admin_secret() {
+  let f = env("TSM_ADMIN_FILE");
+  if (f != null and len(str(f)) > 0) {
+    let raw = read_file(str(f));
+    if (raw != null) { return trim_ws(str(raw)); }
+  }
+  let t = env("TSM_ADMIN");
+  if (t == null) { return ""; }
+  return trim_ws(str(t));
+}
+
+func client_key() {
+  let t = env("TSM_CLIENT_KEY");
+  if (t == null) { return ""; }
+  return trim_ws(str(t));
+}
+
+// /api/meta 用：让前端提前知道 Playground 是否可用。
+export func client_key_set() {
+  return len(client_key()) > 0;
+}
+
+// 单次上游调用。use_client=true 时用 sk-tr- Key 走 /v1，否则用管理口令走 /api/admin。
+func upstream(method, path, body, use_client) {
+  let url = base() + path;
+  // headers 必须先建好再 put：map 字面量是值拷贝，先放进 opts 再改不会生效。
+  let hdrs = { "Accept": "application/json" };
+  if (use_client) {
+    let k = client_key();
+    if (len(k) > 0) { put(hdrs, "Authorization", "Bearer " + k); }
+  } else {
+    let t = admin_secret();
+    if (len(t) > 0) { put(hdrs, "X-Admin-Token", t); }
+  }
+  if (body != null) { put(hdrs, "Content-Type", "application/json"); }
+  let opts = { headers: hdrs, timeout: 30, max_bytes: 8388608, allow_private: true };
+  if (body != null) { put(opts, "body", str(body)); }
+  if (method == "POST") { return http_post(url, opts); }
+  if (method == "PUT") { return http_put(url, opts); }
+  if (method == "PATCH") { return http_patch(url, opts); }
+  if (method == "DELETE") { return http_delete(url, opts); }
+  return http_get(url, opts);
+}
+
+// 解析上游响应：网关失败（连不上/超时）时 status = 0，data = null。
+export func fetch_json(method, path, body, use_client) {
+  let r = upstream(method, path, body, use_client);
+  let code = int(get(r, "status", 0));
+  let raw = get(r, "body", "");
+  let text = "";
+  if (raw != null) { text = str(raw); }
+  let data = null;
+  let parse_err = "";
+  if (len(text) > 0) {
+    let p = try(() => json(text));
+    if (p.err == null) { data = p.ok; } else { parse_err = str(p.err); }
+  }
+  let ok = code >= 200 and code < 300;
+  return {
+    ok: ok,
+    status: code,
+    data: data,
+    err: str(get(r, "err", "")),
+    parse_err: parse_err,
+  };
+}
+
+func data_of(r) {
+  let d = get(r, "data", null);
+  if (d == null) { return {}; }
+  return d;
+}
+
+// 管理端透传：保留上游状态码与 JSON 正文；连不上统一 502，前端读 error 字段。
+export func proxy(method, path, body) {
+  let r = fetch_json(method, path, body, false);
+  let code = int(get(r, "status", 0));
+  if (code == 0) {
+    return {
+      status: 502,
+      body: {
+        ok: false,
+        error: "无法连接 tsm-hub 上游 " + base() + "：" + str(get(r, "err", "连接失败")),
+      },
+    };
+  }
+  if (get(r, "data") == null) {
+    return {
+      status: 502,
+      body: { ok: false, error: "上游返回了非 JSON 响应（HTTP " + str(code) + "）" },
+    };
+  }
+  return { status: code, body: get(r, "data") };
+}
+
+// Playground：用可选客户端 Key 打 /v1/chat/completions（非流式）。
+export func chat(body) {
+  if (len(client_key()) == 0) {
+    return {
+      status: 503,
+      body: { ok: false, error: "未配置 TSM_CLIENT_KEY，请在服务端设置 sk-tr-… 客户端 Key 后再用 Playground" },
+    };
+  }
+  let r = fetch_json("POST", "/v1/chat/completions", body, true);
+  if (not get(r, "ok", false)) {
+    let code = int(get(r, "status", 0));
+    if (code == 0) { code = 502; }
+    let msg = str(get(r, "err", ""));
+    if (len(msg) == 0) { msg = "上游返回 HTTP " + str(code); }
+    return { status: code, body: { ok: false, error: msg } };
+  }
+  return { status: 200, body: get(r, "data") };
+}
+
+// 健康检查：公开的 /healthz + 需要口令的 /api/admin/health。
+export func health() {
+  let hz = fetch_json("GET", "/healthz", null, false);
+  let adm = fetch_json("GET", "/api/admin/health", null, false);
+  let providers = get(data_of(adm), "providers", []);
+  return {
+    ok: get(hz, "ok", false) and get(adm, "ok", false),
+    service: "tsmhub-lume",
+    upstream: base(),
+    healthz_status: int(get(hz, "status", 0)),
+    upstream_status: int(get(adm, "status", 0)),
+    providers: len(providers),
+    error: str(get(adm, "err", "")),
+  };
+}
+
+// 首屏聚合：一次取齐概览 / 成本告警 / Provider 健康 / 最近审计。
+export func overview() {
+  let ov = fetch_json("GET", "/api/admin/overview", null, false);
+  let cw = fetch_json("GET", "/api/admin/cost-warnings", null, false);
+  let hl = fetch_json("GET", "/api/admin/health", null, false);
+  let au = fetch_json("GET", "/api/admin/audit-logs?limit=6", null, false);
+
+  let d = data_of(ov);
+  return {
+    ok: get(ov, "ok", false),
+    upstream: base(),
+    providers: int(get(d, "providers", 0)),
+    healthy: int(get(d, "healthy", 0)),
+    routes: int(get(d, "routes", 0)),
+    keys: int(get(d, "keys", 0)),
+    requests_total: int(get(d, "requests_total", 0)),
+    today: get(d, "today", null),
+    total: get(d, "total", null),
+    warnings: get(data_of(cw), "warnings", []),
+    providers_health: get(data_of(hl), "providers", []),
+    recent_logs: get(data_of(au), "logs", []),
+    errors: {
+      overview: str(get(ov, "err", "")),
+      warnings: str(get(cw, "err", "")),
+      health: str(get(hl, "err", "")),
+      audit: str(get(au, "err", "")),
+    },
+  };
+}

@@ -1,0 +1,79 @@
+// src/guard.lume — 写操作审批闸门（lume-core/lib/approval.lume）
+//
+// tsm-hub 的写操作分两类：
+//   execute  有副作用但可重跑（改 Provider / 路由 / Key、刷新模型、探测）
+//   approve  不可逆（删 Provider / Key / 路由、清空用量 / 记忆、改全局设置）
+//
+// 闸门模式由 TSM_WRITE_GATE 控制：
+//   off       不校验（本机/单人开发，默认）
+//   execute   execute 类需 agent_operator；approve 类仍需 human_admin
+//   approve   所有写操作都需 human_admin
+//
+// 角色由前端在 ?role= 里声明（Lume 的 req 不暴露请求头）。这是流程门禁，
+// 不是身份认证：真正的身份边界由 HTPASSWD_FILE / 反向代理提供。
+
+import "../vendor/lume-core/lib/approval.lume" as approval;
+
+func mode() {
+  let m = env("TSM_WRITE_GATE");
+  if (m == null) { return "off"; }
+  let s = str(m);
+  if (s == "execute" or s == "approve") { return s; }
+  return "off";
+}
+
+func role_from(req) {
+  let qp = get(req, "query_params", null);
+  if (qp == null) { return ""; }
+  return str(get(qp, "role", ""));
+}
+
+// check(req, action) → { allowed, mode, role, action, chain, reason }
+export func check(req, action) {
+  let m = mode();
+  if (m == "off") {
+    return {
+      allowed: true, mode: m, role: "off", action: str(action),
+      chain: [], reason: "",
+    };
+  }
+
+  let need = str(action);
+  if (m == "approve") { need = "approve"; }
+  let chain = approval.chain_for("medium");
+  if (need == "approve") { chain = approval.chain_for("high"); }
+
+  let role = role_from(req);
+  if (len(role) == 0) {
+    return {
+      allowed: false, mode: m, role: role, action: need, chain: chain,
+      reason: "写操作被闸门拦截：请在 ?role= 声明角色（本操作需要 " + need + "）",
+    };
+  }
+  if (not approval.known_role(role)) {
+    return {
+      allowed: false, mode: m, role: role, action: need, chain: chain,
+      reason: "未知角色 " + role + "（可用：agent_operator / agent_reviewer / agent_reviewer_second / human_admin）",
+    };
+  }
+  if (not approval.can(role, need)) {
+    return {
+      allowed: false, mode: m, role: role, action: need, chain: chain,
+      reason: "角色 " + role + " 不能执行 " + need + "；标准审批链：" + join(chain, " → "),
+    };
+  }
+  return {
+    allowed: true, mode: m, role: role, action: need, chain: chain, reason: "",
+  };
+}
+
+// GET /api/meta 用：让前端知道闸门模式与审批链。
+export func policy() {
+  return {
+    mode: mode(),
+    chain: approval.chain_for("medium"),
+    roles: ["agent_operator", "agent_reviewer", "agent_reviewer_second", "human_admin"],
+    execute_action: "execute",
+    approve_action: "approve",
+  };
+}

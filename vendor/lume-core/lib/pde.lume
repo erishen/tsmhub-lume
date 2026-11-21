@@ -1,0 +1,942 @@
+// ════════════════════════════════════════════════════════════════
+// pde.lume — 偏微分方程数值解库（有限差分）
+// 版本：v0.8.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
+//        v0.2.0 增补 2D 热方程：pde_heat_2d（显式 FTCS，Dirichlet / Neumann
+//               零通量边界）+ pde_heat_2d_adi（ADI 交替方向隐式，无条件稳定）。
+//        v0.3.0 增补 1D 线性对流：pde_advect_upwind / pde_advect_lw，支持
+//               周期边界（第三种边界条件类型）。
+//        v0.4.0 增补非线性 Burgers：pde_burgers_inviscid（守恒律 / Rusanov
+//               数值通量）/ pde_burgers_viscous（粘性）；边界泛化为左右
+//               独立 Dirichlet（bcl / bcr）。
+//        v0.5.0 增补 Robin（混合）边界：pde_robin_1d 解 −u'' = f，
+//               左右独立 u ∓ βu' = g，ghost-cell 二阶离散 + pde_tridiag。
+//        v0.6.0 增补椭圆型迭代加速：pde_poisson_sor（字典序 Gauss–Seidel
+//               + 超松弛，迭代量 O(n)）、pde_sor_optimal_omega（最优 ω）、
+//               pde_poisson_residual（∞ 范数残差诊断）。
+//        v0.7.0 增补几何多重网格：pde_poisson_mg（递归 V-cycle，full-weighting
+//               限制 / 双线性延拓 / GS 平滑），收敛因子与网格规模无关。
+//        v0.8.0 增补 2D 波动 leapfrog：pde_wave_2d（含初始速度启动，四边
+//               Dirichlet）+ 2D 对流扩散：pde_advect_diffuse_2d（一阶迎风
+//               对流 + 中心扩散，支持周期 / Dirichlet 边界）。
+//
+// 覆盖三类经典 PDE 的有限差分法：
+//   抛物型：pde_heat_explicit（1D FTCS 显式）/ pde_heat_cn（1D Crank–Nicolson 隐式）
+//           pde_heat_2d（2D FTCS 显式，Dirichlet / Neumann 零通量边界）
+//           pde_heat_2d_adi（2D ADI 隐式，复用 pde_tridiag，无条件稳定）
+//   双曲型：pde_wave_leapfrog（1D 蛙跳格式）/ pde_wave_2d（2D 蛙跳，含初速启动）
+//           pde_advect_upwind（1D 线性对流，一阶迎风）/ pde_advect_lw（二阶 Lax–Wendroff）
+//           pde_burgers_inviscid（非线性守恒律，Rusanov 通量，可捕激波）
+//           pde_burgers_viscous（粘性 Burgers，守恒型对流 + 中心扩散）
+//   对流扩散：pde_advect_diffuse_2d（2D 迎风对流 + 中心扩散，周期 / Dirichlet）
+//   椭圆型：pde_poisson_jacobi（Jacobi 迭代解 ∇²u = f）
+//           pde_poisson_sor（SOR 超松弛加速，迭代量 O(n) vs Jacobi O(n²)）
+//           pde_poisson_mg（多重网格 V-cycle，迭代量与 n 无关，O(N) 总代价）
+//           pde_robin_1d（1D 两点边值 −u''=f，Robin 边界，三对角直接解）
+// 边界条件覆盖：Dirichlet（常数 / 零 / 左右独立）、Neumann（2D 零通量）、
+//               周期（1D 与 2D）、Robin / 混合（u ∓ β·∂u/∂n = g，左右独立）
+//
+// 设计：纯 .lume、三后端一致；不接收 fn 形参，初值/源项一律以预计算数组
+//       传入，边界条件以标量传入（网格状态可显式检查、便于逐点复用；
+//       fn 形参跨函数转发已实测安全，此处并非规避闭包限制）。
+// 工具：pde_linspace（坐标数组）、pde_tridiag（Thomas 算法解三对角）、
+//       pde_reverse（1D 反转）、pde_transpose（2D 转置）、
+//       pde_h2d_val / pde_bc_val / pde_2d_val（邻居取值 + 边界条件）、
+//       pde_poisson_residual / pde_poisson_residual_grid（残差诊断）、
+//       pde_sor_optimal_omega（最优 ω）、pde_zeros_2d（零网格）、
+//       pde_mg_restrict / pde_mg_prolong（多重网格限制 / 延拓）。
+//       所有网格更新均为值语义（用 push 整体重建）；SOR 另用 prevrow（上一行
+//       已更新）+ leftv（本行左邻已更新）两个滚动量携带「本次扫描新值」，
+//       全程不读取尚未构建完的数组。多重网格要求 n = 2^k + 1。
+// ───────────────────────────────────────────────────────────────────
+
+// 均匀坐标数组 [a, ..., b]，共 n 个点
+export func pde_linspace(a: float, b: float, n: int): float[] {
+  let dx: float = (b - a) / (n - 1.0);
+  let xs: float[] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    xs = push(xs, a + dx * i);
+  }
+  return xs;
+}
+
+// 反转子数组（1D，值语义）
+func pde_reverse(a: float[]): float[] {
+  let r: float[] = [];
+  let n: int = len(a);
+  for (let i = n - 1; i >= 0; i = i - 1) {
+    r = push(r, a[i]);
+  }
+  return r;
+}
+
+// Thomas 算法：解三对角方程组 A x = d
+//   A 的下/主/上对角线分别为 a[1..] / b[0..] / c[0..]（长度均为 n）
+// 返回 x（float[]）。O(n)，值语义（用 push 重建，不索引赋值）。
+export func pde_tridiag(a: float[], b: float[], c: float[], d: float[]): float[] {
+  let n: int = len(b);
+  let cp: float[] = [];
+  let dp: float[] = [];
+  cp = push(cp, c[0] / b[0]);
+  dp = push(dp, d[0] / b[0]);
+  for (let i = 1; i < n; i = i + 1) {
+    let m: float = b[i] - a[i - 1] * cp[i - 1];
+    cp = push(cp, c[i] / m);
+    dp = push(dp, (d[i] - a[i - 1] * dp[i - 1]) / m);
+  }
+  // 回代：从右往左 push（xr[0]=x[n-1]，末尾为刚算出的 x[i+1]），再反转
+  let xr: float[] = [];
+  xr = push(xr, dp[n - 1]);
+  for (let i2 = n - 2; i2 >= 0; i2 = i2 - 1) {
+    xr = push(xr, dp[i2] - cp[i2] * xr[len(xr) - 1]);
+  }
+  return pde_reverse(xr);
+}
+
+// ── 抛物型：一维热方程 显式 FTCS ─────────────────────────────
+// u_t = α u_xx，Dirichlet 边界 left_bc / right_bc。返回最终时刻 u（float[]）。
+// 稳定性要求 r = α dt / dx² ≤ 0.5（由调用方保证）。
+export func pde_heat_explicit(u0: float[], a: float, b: float, alpha: float,
+                              dt: float, nt: int, left_bc: float, right_bc: float): float[] {
+  let n: int = len(u0);
+  let dx: float = (b - a) / (n - 1.0);
+  let r: float = alpha * dt / (dx * dx);
+  let u: float[] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let unew: float[] = [];
+    unew = push(unew, left_bc);
+    for (let i = 1; i < n - 1; i = i + 1) {
+      unew = push(unew, u[i] + r * (u[i - 1] - 2.0 * u[i] + u[i + 1]));
+    }
+    unew = push(unew, right_bc);
+    u = unew;
+  }
+  return u;
+}
+
+// ── 抛物型：一维热方程 隐式 Crank–Nicolson（无条件稳定）──────────
+// 同左，但每步解三对角系统，故对大 dt 也稳定。
+export func pde_heat_cn(u0: float[], a: float, b: float, alpha: float,
+                        dt: float, nt: int, left_bc: float, right_bc: float): float[] {
+  let n: int = len(u0);
+  let dx: float = (b - a) / (n - 1.0);
+  let r: float = alpha * dt / (dx * dx);
+  let u: float[] = u0;
+  let m: int = n - 2;                 // 内部未知量个数
+  for (let step = 0; step < nt; step = step + 1) {
+    let Aa: float[] = [];             // 次对角线（Aa[0] 不被读取）
+    let Ab: float[] = [];             // 主对角线
+    let Ac: float[] = [];             // 上对角线（Ac[m-1] 不被读取）
+    let rhs: float[] = [];
+    for (let k = 0; k < m; k = k + 1) {
+      Ab = push(Ab, 1.0 + r);
+      Ac = push(Ac, -r / 2.0);
+      Aa = push(Aa, -r / 2.0);
+      let idx: int = k + 1;           // u 的全局下标
+      let ex: float = (r / 2.0) * u[idx - 1] + (1.0 - r) * u[idx] + (r / 2.0) * u[idx + 1];
+      if (k == 0)        { ex = ex + (r / 2.0) * left_bc; }
+      if (k == m - 1)    { ex = ex + (r / 2.0) * right_bc; }
+      rhs = push(rhs, ex);
+    }
+    let uin: float[] = pde_tridiag(Aa, Ab, Ac, rhs);
+    let unew: float[] = [];
+    unew = push(unew, left_bc);
+    for (let k2 = 0; k2 < m; k2 = k2 + 1) { unew = push(unew, uin[k2]); }
+    unew = push(unew, right_bc);
+    u = unew;
+  }
+  return u;
+}
+
+// ── 抛物型：二维热方程 显式 FTCS（Dirichlet / Neumann 零通量）────
+// u_t = α (u_xx + u_yy)，网格由 u0 (nx×ny) 给定，dx/dy 为步长。返回最终 u。
+// neumann=true：四边界零通量（∂u/∂n=0，ghost-cell 镜像）；false：Dirichlet
+//   边界固定为 0。稳定性要求 α dt (1/dx² + 1/dy²) ≤ 0.5（由调用方保证）。
+// 值语义：每步由旧网格整体重建新网格（同 pde_poisson_jacobi）。
+
+// 取邻居值并施加边界条件（越界即 ghost cell）：Neumann 镜像内部邻居，
+// Dirichlet ghost 取 0。所有访问均在函数内做边界判断，绝不越界索引。
+func pde_h2d_val(u: float[][], i: int, j: int, di: int, dj: int,
+                 nx: int, ny: int, neumann: bool): float {
+  let ii = i + di;
+  let jj = j + dj;
+  let v: float = 0.0;
+  if (ii >= 0 && ii < nx && jj >= 0 && jj < ny) {
+    v = u[ii][jj];
+  } else {
+    if (neumann) {
+      let mi = ii;
+      let mj = jj;
+      if (ii < 0)    { mi = i + 1; }
+      if (ii >= nx)  { mi = i - 1; }
+      if (jj < 0)    { mj = j + 1; }
+      if (jj >= ny)  { mj = j - 1; }
+      v = u[mi][mj];
+    } else {
+      v = 0.0;
+    }
+  }
+  return v;
+}
+
+export func pde_heat_2d(u0: float[][], dx: float, dy: float, alpha: float,
+                        dt: float, nt: int, neumann: bool): float[][] {
+  let nx = len(u0);
+  let ny = len(u0[0]);
+  let u: float[][] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let unew: float[][] = [];
+    for (let i = 0; i < nx; i = i + 1) {
+      let row: float[] = [];
+      for (let j = 0; j < ny; j = j + 1) {
+        let on_boundary = (i == 0 || i == nx - 1 || j == 0 || j == ny - 1);
+        if (on_boundary && neumann == false) {
+          row = push(row, 0.0);                 // Dirichlet 边界固定为 0
+        } else {
+          let uij: float  = u[i][j];
+          // 本地函数返回值须显式标注（文本后端无法推断）
+          let uim1: float = pde_h2d_val(u, i, j, -1, 0, nx, ny, neumann);
+          let uip1: float = pde_h2d_val(u, i, j,  1, 0, nx, ny, neumann);
+          let ujm1: float = pde_h2d_val(u, i, j, 0, -1, nx, ny, neumann);
+          let ujp1: float = pde_h2d_val(u, i, j, 0,  1, nx, ny, neumann);
+          let lap = (uip1 - 2.0 * uij + uim1) / (dx * dx)
+                  + (ujp1 - 2.0 * uij + ujm1) / (dy * dy);
+          row = push(row, uij + alpha * dt * lap);
+        }
+      }
+      unew = push(unew, row);
+    }
+    u = unew;
+  }
+  return u;
+}
+
+// ── 抛物型：二维热方程 ADI 交替方向隐式（Peaceman–Rachford）──────
+// u_t = α(u_xx + u_yy)，无条件稳定，可突破显式 FTCS 的 CFL 限制。
+// 每步拆两个半步，各方向解一串三对角系统（复用 pde_tridiag）：
+//   半步1（x 隐式 / y 显式）：(1+rx)u*_ij − (rx/2)(u*_{i−1,j}+u*_{i+1,j})
+//                            = u^n_ij + (ry/2)(u^n_{i,j−1} − 2u^n_ij + u^n_{i,j+1})
+//   半步2（y 隐式 / x 显式）：(1+ry)u^{n+1}_ij − (ry/2)(u^{n+1}_{i,j−1}+u^{n+1}_{i,j+1})
+//                            = u*_ij + (rx/2)(u*_{i−1,j} − 2u*_ij + u*_{i+1,j})
+// 其中 rx = αdt/dx²，ry = αdt/dy²。边界为**常数 Dirichlet 值 bc**（四边统一），
+// 此时中间层 u* 的边界取 bc 精确成立。稳定性对任意 dt 成立（精度仍随 dt 下降）。
+
+// 转置 n×p 矩阵 → p×n（支持非方阵，值语义整体重建）
+func pde_transpose(m: float[][]): float[][] {
+  let nr = len(m);
+  let nc = len(m[0]);
+  let out: float[][] = [];
+  for (let c = 0; c < nc; c = c + 1) {
+    let row: float[] = [];
+    for (let r = 0; r < nr; r = r + 1) { row = push(row, m[r][c]); }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// 半步1：转置为 [j][i]，对每条固定 j 的行沿 i 解三对角，再转置回 [i][j]。
+func pde_adi_x(u: float[][], nx: int, ny: int, rx: float, ry: float, bc: float): float[][] {
+  let mx: int = nx - 2;                 // 沿 i 的内部未知量个数
+  let ut: float[][] = pde_transpose(u);
+  let ust: float[][] = [];
+  for (let j = 0; j < ny; j = j + 1) {
+    let row: float[] = [];
+    if (j == 0 || j == ny - 1) {
+      for (let q = 0; q < nx; q = q + 1) { row = push(row, bc); }   // y 边界行
+    } else {
+      let Aa: float[] = [];
+      let Ab: float[] = [];
+      let Ac: float[] = [];
+      let rhs: float[] = [];
+      for (let k = 0; k < mx; k = k + 1) {
+        Ab = push(Ab, 1.0 + rx);
+        Ac = push(Ac, -rx / 2.0);
+        Aa = push(Aa, -rx / 2.0);
+        let i: int = k + 1;
+        let e: float = ut[j][i]
+                     + (ry / 2.0) * (ut[j - 1][i] - 2.0 * ut[j][i] + ut[j + 1][i]);
+        if (k == 0)      { e = e + (rx / 2.0) * bc; }               // i=1 左边界
+        if (k == mx - 1) { e = e + (rx / 2.0) * bc; }               // i=nx−2 右边界
+        rhs = push(rhs, e);
+      }
+      let sol: float[] = pde_tridiag(Aa, Ab, Ac, rhs);
+      row = push(row, bc);
+      for (let k2 = 0; k2 < mx; k2 = k2 + 1) { row = push(row, sol[k2]); }
+      row = push(row, bc);
+    }
+    ust = push(ust, row);
+  }
+  return pde_transpose(ust);
+}
+
+// 半步2：在 [i][j] 视图下，对每条固定 i 的行沿 j 解三对角。
+func pde_adi_y(us: float[][], nx: int, ny: int, rx: float, ry: float, bc: float): float[][] {
+  let my: int = ny - 2;                 // 沿 j 的内部未知量个数
+  let unew: float[][] = [];
+  for (let i = 0; i < nx; i = i + 1) {
+    let row: float[] = [];
+    if (i == 0 || i == nx - 1) {
+      for (let q = 0; q < ny; q = q + 1) { row = push(row, bc); }   // x 边界行
+    } else {
+      let Ba: float[] = [];
+      let Bb: float[] = [];
+      let Bc: float[] = [];
+      let rhs: float[] = [];
+      for (let k = 0; k < my; k = k + 1) {
+        Bb = push(Bb, 1.0 + ry);
+        Bc = push(Bc, -ry / 2.0);
+        Ba = push(Ba, -ry / 2.0);
+        let j: int = k + 1;
+        let e: float = us[i][j]
+                     + (rx / 2.0) * (us[i - 1][j] - 2.0 * us[i][j] + us[i + 1][j]);
+        if (k == 0)      { e = e + (ry / 2.0) * bc; }               // j=1 下边界
+        if (k == my - 1) { e = e + (ry / 2.0) * bc; }               // j=ny−2 上边界
+        rhs = push(rhs, e);
+      }
+      let sol: float[] = pde_tridiag(Ba, Bb, Bc, rhs);
+      row = push(row, bc);
+      for (let k2 = 0; k2 < my; k2 = k2 + 1) { row = push(row, sol[k2]); }
+      row = push(row, bc);
+    }
+    unew = push(unew, row);
+  }
+  return unew;
+}
+
+// ADI 主循环：每步 = 半步1 + 半步2。nt 步后到 t = t0 + nt·dt。
+export func pde_heat_2d_adi(u0: float[][], dx: float, dy: float, alpha: float,
+                            dt: float, nt: int, bc: float): float[][] {
+  let nx: int = len(u0);
+  let ny: int = len(u0[0]);
+  let rx: float = alpha * dt / (dx * dx);
+  let ry: float = alpha * dt / (dy * dy);
+  let u: float[][] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let us: float[][] = pde_adi_x(u, nx, ny, rx, ry, bc);
+    u = pde_adi_y(us, nx, ny, rx, ry, bc);
+  }
+  return u;
+}
+
+// ── 双曲型：一维波动方程 蛙跳格式 ─────────────────────────────
+// u_tt = c² u_xx，零初速度（u_t(x,0)=0），Dirichlet 边界。返回最终时刻 u。
+// 稳定性要求 Courant 数 C = c dt / dx ≤ 1（由调用方保证）。
+export func pde_wave_leapfrog(u0: float[], a: float, b: float, c: float,
+                              dt: float, nt: int, left_bc: float, right_bc: float): float[] {
+  let n: int = len(u0);
+  let dx: float = (b - a) / (n - 1.0);
+  let C2: float = (c * dt / dx) * (c * dt / dx);
+  // 第一步（由 u_t=0 推出）
+  let u1: float[] = [];
+  u1 = push(u1, left_bc);
+  for (let i = 1; i < n - 1; i = i + 1) {
+    u1 = push(u1, u0[i] + 0.5 * C2 * (u0[i - 1] - 2.0 * u0[i] + u0[i + 1]));
+  }
+  u1 = push(u1, right_bc);
+  let uprev: float[] = u0;
+  let ucur: float[] = u1;
+  for (let step = 1; step < nt; step = step + 1) {
+    let unext: float[] = [];
+    unext = push(unext, left_bc);
+    for (let i2 = 1; i2 < n - 1; i2 = i2 + 1) {
+      unext = push(unext, 2.0 * ucur[i2] - uprev[i2]
+                          + C2 * (ucur[i2 - 1] - 2.0 * ucur[i2] + ucur[i2 + 1]));
+    }
+    unext = push(unext, right_bc);
+    uprev = ucur;
+    ucur = unext;
+  }
+  return ucur;
+}
+
+// ── 双曲型：一维线性对流（输运）方程 u_t + c·u_x = 0 ───────────
+// 显式差分，Courant 数 C = c·dt/dx，稳定要求 |C| ≤ 1（由调用方保证）。
+// 约定 c > 0（信息自左向右传播），故迎风取后向差分。
+// periodic=true → 周期边界（邻居索引环绕，守恒、无边界反射）；
+// false → Dirichlet，越界邻居取常数 bc。每步整体重建（值语义）。
+// 两者特性对比（经典教学结论，本库测试可复现）：
+//   upwind 一阶精度、强数值耗散（振幅衰减），但单调不振荡；
+//   Lax–Wendroff 二阶精度、振幅保持好，但有色散（相位误差）、间断处振荡。
+
+// 取邻居值并施加边界：周期环绕，或左右独立 Dirichlet 常值 bcl / bcr。
+// 线性对流两边界同值时传 bcl=bcr=bc（外部 API 仍只需一个 bc 标量）。
+// idx 只会是 −1 或 n，故一次加/减 n 即落回 [0,n)。绝不越界索引。
+func pde_bc_val(u: float[], idx: int, n: int, periodic: bool,
+                bcl: float, bcr: float): float {
+  let v: float = bcl;                  // idx < 0 → 左边界
+  if (idx >= 0 && idx < n) {
+    v = u[idx];
+  } else {
+    if (periodic) {
+      let k = idx;
+      if (k < 0)  { k = k + n; }
+      if (k >= n) { k = k - n; }
+      v = u[k];
+    } else {
+      if (idx >= n) { v = bcr; }       // 右边界
+    }
+  }
+  return v;
+}
+
+// 一阶迎风：u_i^{n+1} = u_i − C·(u_i − u_{i−1})
+export func pde_advect_upwind(u0: float[], dx: float, c: float, dt: float,
+                              nt: int, periodic: bool, bc: float): float[] {
+  let n = len(u0);
+  let C: float = c * dt / dx;
+  let u: float[] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let unew: float[] = [];
+    for (let i = 0; i < n; i = i + 1) {
+      let uim1: float = pde_bc_val(u, i - 1, n, periodic, bc, bc);
+      unew = push(unew, u[i] - C * (u[i] - uim1));
+    }
+    u = unew;
+  }
+  return u;
+}
+
+// 二阶 Lax–Wendroff：
+// u_i^{n+1} = u_i − (C/2)(u_{i+1} − u_{i−1}) + (C²/2)(u_{i+1} − 2u_i + u_{i−1})
+export func pde_advect_lw(u0: float[], dx: float, c: float, dt: float,
+                          nt: int, periodic: bool, bc: float): float[] {
+  let n = len(u0);
+  let C: float = c * dt / dx;
+  let u: float[] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let unew: float[] = [];
+    for (let i = 0; i < n; i = i + 1) {
+      let uim1: float = pde_bc_val(u, i - 1, n, periodic, bc, bc);
+      let uip1: float = pde_bc_val(u, i + 1, n, periodic, bc, bc);
+      unew = push(unew, u[i] - (C / 2.0) * (uip1 - uim1)
+                        + (C * C / 2.0) * (uip1 - 2.0 * u[i] + uim1));
+    }
+    u = unew;
+  }
+  return u;
+}
+
+// ── 双曲型（非线性）：Burgers 方程 ────────────────────────────
+// 通量 f(u) = u²/2，特征速度 f'(u) = u（非线性：波形自陡化，压缩区形成激波）。
+// 与上面的线性对流不同，这里必须用**守恒型**格式才能给出正确的激波速度
+// （Rankine–Hugoniot: s = [f]/[u]）；非守恒形式会算出错误的跳跃位置。
+// 边界沿用 pde_bc_val：周期，或左右独立 Dirichlet bcl / bcr。
+
+// 无粘 Burgers：u_t + (u²/2)_x = 0，局部 Lax–Friedrichs（Rusanov）数值通量
+//   F_{i+1/2} = ½(f(u_i)+f(u_{i+1})) − ½·a·(u_{i+1}−u_i)
+//   a = max(|u_i|, |u_{i+1}|) 为该界面最大特征速度
+//   u_i^{n+1} = u_i − (dt/dx)·(F_{i+1/2} − F_{i−1/2})
+// 一阶、单调、无振荡，收敛到熵解；代价是激波被抹宽数格。
+// 稳定条件 max|u|·dt/dx ≤ 1（由调用方保证）。
+export func pde_burgers_inviscid(u0: float[], dx: float, dt: float, nt: int,
+                                 periodic: bool, bcl: float, bcr: float): float[] {
+  let n = len(u0);
+  let lam: float = dt / dx;
+  let u: float[] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let unew: float[] = [];
+    for (let i = 0; i < n; i = i + 1) {
+      let uim1: float = pde_bc_val(u, i - 1, n, periodic, bcl, bcr);
+      let uip1: float = pde_bc_val(u, i + 1, n, periodic, bcl, bcr);
+      let fi: float   = 0.5 * u[i] * u[i];
+      let fim1: float = 0.5 * uim1 * uim1;
+      let fip1: float = 0.5 * uip1 * uip1;
+      let aL: float = abs(uim1);
+      if (abs(u[i]) > aL) { aL = abs(u[i]); }
+      let aR: float = abs(u[i]);
+      if (abs(uip1) > aR) { aR = abs(uip1); }
+      let FL: float = 0.5 * (fim1 + fi) - 0.5 * aL * (u[i] - uim1);
+      let FR: float = 0.5 * (fi + fip1) - 0.5 * aR * (uip1 - u[i]);
+      unew = push(unew, u[i] - lam * (FR - FL));
+    }
+    u = unew;
+  }
+  return u;
+}
+
+// 粘性 Burgers：u_t + (u²/2)_x = ν·u_xx，显式守恒型（中心差分，无数值粘性）
+//   u_i^{n+1} = u_i − (dt/2dx)(f(u_{i+1}) − f(u_{i−1}))
+//               + (ν dt/dx²)(u_{i+1} − 2u_i + u_{i−1})
+// 非周期时首末点**强加** Dirichlet（bcl / bcr），内部点邻居均在域内，
+// 无需 ghost cell 近似；周期时所有点环绕取值。
+// 稳定：ν dt/dx² ≤ 0.5、|u|dt/dx ≤ 1（调用方保证）；中心差分还要求网格
+// Peclet 数 |u|dx/ν ≲ 2，否则出现非物理振荡（此时应改用上面的迎风通量）。
+export func pde_burgers_viscous(u0: float[], dx: float, nu: float, dt: float,
+                                nt: int, periodic: bool,
+                                bcl: float, bcr: float): float[] {
+  let n = len(u0);
+  let lam: float = dt / (2.0 * dx);
+  let dif: float = nu * dt / (dx * dx);
+  let u: float[] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let unew: float[] = [];
+    for (let i = 0; i < n; i = i + 1) {
+      if (periodic == false && i == 0) {
+        unew = push(unew, bcl);
+      } else {
+        if (periodic == false && i == n - 1) {
+          unew = push(unew, bcr);
+        } else {
+          let uim1: float = pde_bc_val(u, i - 1, n, periodic, bcl, bcr);
+          let uip1: float = pde_bc_val(u, i + 1, n, periodic, bcl, bcr);
+          let fim1: float = 0.5 * uim1 * uim1;
+          let fip1: float = 0.5 * uip1 * uip1;
+          unew = push(unew, u[i] - lam * (fip1 - fim1)
+                            + dif * (uip1 - 2.0 * u[i] + uim1));
+        }
+      }
+    }
+    u = unew;
+  }
+  return u;
+}
+
+// ── 椭圆型：1D 两点边值 −u'' = f，Robin（混合）边界 ────────────
+// 边界条件（左右独立）：u(0) − β_L·u'(0) = g_L，u(1) + β_R·u'(1) = g_R。
+// β=0 退化为 Dirichlet u=g；β>0 为真正的混合边界（β→∞ 近似 Neumann）。
+// 离散（ghost cell + 中心差分，二阶精度，绝不越界索引，要求 n ≥ 3）：
+//   左端 u_{−1} = u_1 − (2h/β_L)(u_0 − g_L)，代入 (2u_0−u_{−1}−u_1)/h² = f_0
+//     → (2 + 2h/β_L)u_0 − 2u_1 = h²f_0 + (2h/β_L)g_L
+//   右端 u_n = u_{n−2} + (2h/β_R)(g_R − u_{n−1})，代入同理
+//     → (2 + 2h/β_R)u_{n−1} − 2u_{n−2} = h²f_{n−1} + (2h/β_R)g_R
+//   内部 2u_i − u_{i−1} − u_{i+1} = h²f_i
+// 直接解三对角系统（复用 pde_tridiag），无迭代、O(n)。
+// 约定：pde_tridiag 的第 i 行下对角取 a[i−1]、上对角取 c[i]，故 a[n−2]
+//       存右边界行的 −2、c[0] 存左边界行的 −2；a[n−1]/c[n−1] 为占位 0。
+export func pde_robin_1d(f: float[], h: float, bl: float, br: float,
+                          gl: float, gr: float): float[] {
+  let n: int = len(f);
+  let a: float[] = [];
+  let b: float[] = [];
+  let c: float[] = [];
+  let d: float[] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let ai: float = -1.0;               // a[i] = 第 i+1 行的下对角
+    let bi: float = 2.0;
+    let ci: float = -1.0;               // c[i] = 第 i 行的上对角
+    let di: float = h * h * f[i];
+    if (i == 0) {
+      if (bl == 0.0) { bi = 1.0; ci = 0.0; di = gl; }
+      else {
+        bi = 2.0 + 2.0 * h / bl;
+        ci = -2.0;
+        di = h * h * f[i] + 2.0 * h / bl * gl;
+      }
+    }
+    if (i == n - 2) {
+      ai = -2.0;                        // 右边界行的下对角
+      if (br == 0.0) { ai = 0.0; }
+    }
+    if (i == n - 1) {
+      ai = 0.0;                         // 占位（a[n−1] 不被读取）
+      ci = 0.0;                         // 占位（c[n−1] 不参与回代）
+      if (br == 0.0) { bi = 1.0; di = gr; }
+      else {
+        bi = 2.0 + 2.0 * h / br;
+        di = h * h * f[i] + 2.0 * h / br * gr;
+      }
+    }
+    a = push(a, ai);
+    b = push(b, bi);
+    c = push(c, ci);
+    d = push(d, di);
+  }
+  let u: float[] = pde_tridiag(a, b, c, d);   // 本地函数返回值须显式标注
+  return u;
+}
+
+// ── 椭圆型：二维泊松方程 Jacobi 迭代 ∇²u = f ──────────────────
+// f 为 n×n 网格源项；Dirichlet 边界固定为 0（零边界）。返回数值解 u（n×n）。
+// 注：Jacobi 天然值语义——每步由旧网格整体重建新网格，无索引赋值。
+export func pde_poisson_jacobi(f: float[][], h: float, iters: int): float[][] {
+  let n: int = len(f);
+  let u: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) { row = push(row, 0.0); }
+    u = push(u, row);
+  }
+  for (let it = 0; it < iters; it = it + 1) {
+    let unew: float[][] = [];
+    for (let i2 = 0; i2 < n; i2 = i2 + 1) {
+      let row: float[] = [];
+      for (let j2 = 0; j2 < n; j2 = j2 + 1) {
+        if (i2 == 0 || i2 == n - 1 || j2 == 0 || j2 == n - 1) {
+          row = push(row, 0.0);                       // 边界固定
+        } else {
+          let v: float = 0.25 * (u[i2 - 1][j2] + u[i2 + 1][j2]
+                               + u[i2][j2 - 1] + u[i2][j2 + 1]
+                               - h * h * f[i2][j2]);
+          row = push(row, v);
+        }
+      }
+      unew = push(unew, row);
+    }
+    u = unew;
+  }
+  return u;
+}
+
+// ── 工具：n×n 零网格 ──────────────────────────────────────────
+export func pde_zeros_2d(n: int): float[][] {
+  let z: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) { row = push(row, 0.0); }
+    z = push(z, row);
+  }
+  return z;
+}
+
+// ── 椭圆型：二维泊松方程 SOR 超松弛迭代 ∇²u = f ──────────────
+// 与 pde_poisson_jacobi 同一 5 点离散、同样零 Dirichlet 边界，但改用字典序
+// Gauss–Seidel（本轮扫描中已更新的上邻 / 左邻立即参与）+ 松弛因子 ω：
+//   u_ij^GS = ¼(u_{i−1,j}^new + u_{i+1,j}^old + u_{i,j−1}^new + u_{i,j+1}^old − h²f_ij)
+//   u_ij^new = (1−ω)·u_ij^old + ω·u_ij^GS
+// ω=1 即 Gauss–Seidel；0<ω<2 收敛；ω_opt = 2/(1+sin(π/(n−1))) 时谱半径
+// ω_opt−1，达到同一精度所需迭代量 O(n)（Jacobi 为 O(n²)）；ω≥2 发散。
+//
+// 值语义实现：lume 不能原地索引赋值，也不宜读取「尚未 push 完」的数组，故用
+// prevrow（上一行已完整构建的新值）+ leftv（本行左邻刚算出的新值）两个滚动量
+// 携带「本次扫描已更新」的分量；旧值一律从上一轮网格 u 读取。
+// _from 版接受任意初值，可充当多重网格的 smoother / 续算；pde_poisson_sor
+// 保持四参数原 API，只是以零初值调用 _from。
+export func pde_poisson_sor_from(u0: float[][], f: float[][], h: float,
+                                 iters: int, omega: float): float[][] {
+  let n: int = len(f);
+  let u: float[][] = u0;
+  for (let it = 0; it < iters; it = it + 1) {
+    let unew: float[][] = [];
+    let prevrow: float[] = [];
+    for (let i = 0; i < n; i = i + 1) {
+      let row: float[] = [];
+      let leftv: float = 0.0;
+      for (let j = 0; j < n; j = j + 1) {
+        let v: float = 0.0;
+        if (i > 0 && i < n - 1 && j > 0 && j < n - 1) {
+          let nb: float = prevrow[j] + u[i + 1][j] + leftv + u[i][j + 1]
+                          - h * h * f[i][j];
+          let gs: float = 0.25 * nb;
+          v = (1.0 - omega) * u[i][j] + omega * gs;
+        }
+        row = push(row, v);
+        leftv = v;
+      }
+      unew = push(unew, row);
+      prevrow = row;
+    }
+    u = unew;
+  }
+  return u;
+}
+
+// 零初值的便捷入口（原 API，签名不变）。
+export func pde_poisson_sor(f: float[][], h: float, iters: int,
+                            omega: float): float[][] {
+  let u0: float[][] = pde_zeros_2d(len(f));
+  let u: float[][] = pde_poisson_sor_from(u0, f, h, iters, omega);
+  return u;
+}
+
+// n×n 网格（h = 1/(n−1)）、零 Dirichlet 边界下的最优 SOR 松弛因子。
+// ρ_Jacobi = cos(π/(n−1))，ω_opt = 2/(1+sqrt(1−ρ_J²)) = 2/(1+sin(π/(n−1)))。
+// 要求 n ≥ 3：n=2 时 ω=2 已在发散边界，n=1 则无内部点、分母为 0。
+export func pde_sor_optimal_omega(n: int): float {
+  return 2.0 / (1.0 + sin(3.141592653589793 / (n - 1.0)));
+}
+
+// 5 点离散方程 (Σ邻居 − 4u)/h² = f 的内部点最大绝对残差（∞ 范数）。
+// 与具体迭代格式无关，可同时用于 Jacobi / Gauss–Seidel / SOR 的收敛诊断。
+export func pde_poisson_residual(u: float[][], f: float[][], h: float): float {
+  let n: int = len(u);
+  let rmax: float = 0.0;
+  for (let i = 1; i < n - 1; i = i + 1) {
+    for (let j = 1; j < n - 1; j = j + 1) {
+      let r: float = (u[i - 1][j] + u[i + 1][j] + u[i][j - 1]
+                      + u[i][j + 1] - 4.0 * u[i][j]) / (h * h) - f[i][j];
+      if (r < 0.0) { r = -r; }
+      if (r > rmax) { rmax = r; }
+    }
+  }
+  return rmax;
+}
+
+// ── 椭圆型：几何多重网格 V-cycle（零 Dirichlet 边界）──────────
+// 要求 n = 2^k + 1（9 / 17 / 33 …），粗网格链 n → (n−1)/2+1 → … → 3。
+// 离散方程 A_h u = f，A_h u := (Σ邻居 − 4u)/h²。
+//   correction scheme：r   = f − A_h u      （细网格残差场）
+//                      r_c = I_h^{2h} r     （full-weighting 限制）
+//                      A_{2h} e_c = r_c     （粗网格上解误差方程）
+//                      u  ← u + I_{2h}^h e_c（双线性延拓校正）
+// 前后各 2 次 GS 平滑压高频误差、粗网格校正压低频误差，二者互补 →
+// 收敛因子约 0.1 且与网格规模无关（SOR 的迭代量仍随 n 线性增长）。
+// Galerkin 缩放：2D 中 I_h^{2h} = ¼·P^T（P 为双线性延拓），正是 9 点
+// full-weighting 模板 [1 2 1; 2 4 2; 1 2 1]/16（权重和 1）；配合
+// A_{2h} = (Σ−4·)/(2h)²，粗网格右端项无需再乘额外因子。
+
+// 残差场 r = f − A_h u（内部点），边界置 0；供限制算子使用。
+export func pde_poisson_residual_grid(u: float[][], f: float[][],
+                                      h: float): float[][] {
+  let n: int = len(u);
+  let r: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      let v: float = 0.0;
+      if (i > 0 && i < n - 1 && j > 0 && j < n - 1) {
+        let lap: float = (u[i - 1][j] + u[i + 1][j]
+                         + u[i][j - 1] + u[i][j + 1]
+                         - 4.0 * u[i][j]) / (h * h);
+        v = f[i][j] - lap;
+      }
+      row = push(row, v);
+    }
+    r = push(r, row);
+  }
+  return r;
+}
+
+// full-weighting 限制 I_h^{2h}：粗点 (I,J) 对应细点 (2I,2J)。
+// 粗网格尺寸用 for 计数得出，避开 lume 的浮点整数除法（17/2 = 8.5）。
+func pde_mg_restrict(rf: float[][]): float[][] {
+  let nf: int = len(rf);
+  let nc: int = 1;
+  for (let k = 1; k < nf; k = k + 2) { nc = nc + 1; }
+  let rc: float[][] = [];
+  for (let I = 0; I < nc; I = I + 1) {
+    let row: float[] = [];
+    for (let J = 0; J < nc; J = J + 1) {
+      let v: float = 0.0;
+      if (I > 0 && I < nc - 1 && J > 0 && J < nc - 1) {
+        let i: int = 2 * I;
+        let j: int = 2 * J;
+        v = 0.0625 * (4.0 * rf[i][j]
+             + 2.0 * (rf[i - 1][j] + rf[i + 1][j]
+                    + rf[i][j - 1] + rf[i][j + 1])
+             + rf[i - 1][j - 1] + rf[i - 1][j + 1]
+             + rf[i + 1][j - 1] + rf[i + 1][j + 1]);
+      }
+      row = push(row, v);
+    }
+    rc = push(rc, row);
+  }
+  return rc;
+}
+
+// 双线性延拓 I_{2h}^h：细网格尺寸由 nc 推出，nf = 2·nc − 1。
+// 按粗网格单元逐块生成两行，完全避开整数除法 / 取模与索引赋值。
+func pde_mg_prolong(ec: float[][]): float[][] {
+  let nc: int = len(ec);
+  let ef: float[][] = [];
+  for (let I = 0; I < nc - 1; I = I + 1) {
+    let even: float[] = [];
+    let odd: float[] = [];
+    for (let J = 0; J < nc - 1; J = J + 1) {
+      let a: float = ec[I][J];
+      let b: float = ec[I][J + 1];
+      let c: float = ec[I + 1][J];
+      let d: float = ec[I + 1][J + 1];
+      even = push(even, a);
+      even = push(even, 0.5 * (a + b));
+      odd = push(odd, 0.5 * (a + c));
+      odd = push(odd, 0.25 * (a + b + c + d));
+    }
+    even = push(even, ec[I][nc - 1]);
+    odd = push(odd, 0.5 * (ec[I][nc - 1] + ec[I + 1][nc - 1]));
+    ef = push(ef, even);
+    ef = push(ef, odd);
+  }
+  let last: float[] = [];
+  for (let J2 = 0; J2 < nc - 1; J2 = J2 + 1) {
+    last = push(last, ec[nc - 1][J2]);
+    last = push(last, 0.5 * (ec[nc - 1][J2] + ec[nc - 1][J2 + 1]));
+  }
+  last = push(last, ec[nc - 1][nc - 1]);
+  ef = push(ef, last);
+  return ef;
+}
+
+// 逐点相加 u + e（值语义）
+func pde_mg_add(u: float[][], e: float[][]): float[][] {
+  let n: int = len(u);
+  let w: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      row = push(row, u[i][j] + e[i][j]);
+    }
+    w = push(w, row);
+  }
+  return w;
+}
+
+// 单个 V-cycle（递归）：前平滑 → 残差限制 → 粗网格解误差 → 延拓校正 → 后平滑。
+// 最粗层 n≤3 时内部仅 1 个未知点，4 次 GS 即精确求解。
+func pde_mg_vcycle(u: float[][], f: float[][], h: float,
+                   omega: float): float[][] {
+  let n: int = len(u);
+  if (n <= 3) {
+    let ucoarse: float[][] = pde_poisson_sor_from(u, f, h, 4, 1.0);
+    return ucoarse;
+  }
+  let us: float[][] = pde_poisson_sor_from(u, f, h, 2, omega);
+  let r: float[][] = pde_poisson_residual_grid(us, f, h);
+  let rc: float[][] = pde_mg_restrict(r);
+  let nc: int = len(rc);
+  let ec0: float[][] = pde_zeros_2d(nc);
+  let ec: float[][] = pde_mg_vcycle(ec0, rc, 2.0 * h, omega);
+  let ef: float[][] = pde_mg_prolong(ec);
+  let uc: float[][] = pde_mg_add(us, ef);
+  let uu: float[][] = pde_poisson_sor_from(uc, f, h, 2, omega);
+  return uu;
+}
+
+// 顶层入口：零初值 + cycles 个 V-cycle。smoother 用 GS（omega=1）最稳；
+// 总代价 O(N)（N 为未知点数），且收敛因子与 n 无关。
+export func pde_poisson_mg(f: float[][], h: float, cycles: int,
+                           omega: float): float[][] {
+  let u: float[][] = pde_zeros_2d(len(f));
+  for (let k = 0; k < cycles; k = k + 1) {
+    u = pde_mg_vcycle(u, f, h, omega);
+  }
+  return u;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 二维波动方程（leapfrog）与二维对流扩散方程
+//
+// pde_wave_2d：u_tt = c²(u_xx + u_yy)，二阶中心差分 + 蛙跳时间推进。
+//   记 Cx²=(c·dt/dx)²、Cy²=(c·dt/dy)²，内部点
+//     u^{n+1} = 2u^n − u^{n−1}
+//             + Cx²(u^n_{i+1,j} − 2u^n_{ij} + u^n_{i−1,j})
+//             + Cy²(u^n_{i,j+1} − 2u^n_{ij} + u^n_{i,j−1})
+//   首步由初始速度 v0 启动（Taylor 展开到二阶）：
+//     u¹ = u⁰ + dt·v⁰ + ½(Cx²δxx + Cy²δyy)u⁰
+//   四边 Dirichlet 常值 bc；CFL 要求 Cx² + Cy² ≤ 1（方网格即 c·dt/dx ≤ 1/√2），
+//   由调用方保证。蛙跳无数值耗散，能量在稳定域内长期保持，适合波动传播。
+//
+// pde_advect_diffuse_2d：u_t + a·u_x + b·u_y = ν(u_xx + u_yy)。
+//   对流项按 a/b 符号取一阶迎风，扩散项二阶中心：
+//     cx=a·dt/dx, cy=b·dt/dy, rx=νdt/dx², ry=νdt/dy²
+//     u^{n+1} = u − cx·Δ_upwind − cy·Δ_upwind
+//               + rx·(u_{i+1,j}−2u+u_{i−1,j}) + ry·(u_{i,j+1}−2u+u_{i,j−1})
+//   periodic=true → 双方向环绕（纯对流时质量严格守恒，无边界反射）；
+//   false → 四边 Dirichlet 常值 bc。稳定条件
+//   |cx| + |cy| + 2rx + 2ry ≤ 1，由调用方保证。
+//   一阶迎风带来数值耗散但单调不振荡；网格 Peclet 数大时可能出现过度抹平。
+//   两者均为值语义（push 整体重建），边界由 pde_2d_val 统一取值。
+// ════════════════════════════════════════════════════════════════
+
+// 2D 邻居取值：周期环绕，或四边 Dirichlet 常值 bc。di/dj 只取 −1/0/1，
+// 故一次加/减 nx、ny 即落回合法范围，绝不越界索引。
+func pde_2d_val(u: float[][], i: int, j: int, di: int, dj: int,
+                nx: int, ny: int, periodic: bool, bc: float): float {
+  let ii: int = i + di;
+  let jj: int = j + dj;
+  if (periodic) {
+    if (ii < 0)   { ii = ii + nx; }
+    if (ii >= nx) { ii = ii - nx; }
+    if (jj < 0)   { jj = jj + ny; }
+    if (jj >= ny) { jj = jj - ny; }
+    return u[ii][jj];
+  }
+  if (ii >= 0 && ii < nx && jj >= 0 && jj < ny) { return u[ii][jj]; }
+  return bc;
+}
+
+// 二维波动方程 leapfrog。返回 nt 步后的位移网格（不含时间历史）。
+export func pde_wave_2d(u0: float[][], v0: float[][], dx: float, dy: float,
+                        c: float, dt: float, nt: int, bc: float): float[][] {
+  if (nt < 1) { return u0; }
+  let nx: int = len(u0);
+  let ny: int = len(u0[0]);
+  let cx2: float = (c * dt / dx) * (c * dt / dx);
+  let cy2: float = (c * dt / dy) * (c * dt / dy);
+  // 首步：Taylor 启动，含初始速度 v0
+  let u1: float[][] = [];
+  for (let i = 0; i < nx; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < ny; j = j + 1) {
+      if (i == 0 || i == nx - 1 || j == 0 || j == ny - 1) {
+        row = push(row, bc);
+      } else {
+        let uij: float = u0[i][j];
+        let uim1: float = pde_2d_val(u0, i, j, -1, 0, nx, ny, false, bc);
+        let uip1: float = pde_2d_val(u0, i, j,  1, 0, nx, ny, false, bc);
+        let ujm1: float = pde_2d_val(u0, i, j, 0, -1, nx, ny, false, bc);
+        let ujp1: float = pde_2d_val(u0, i, j, 0,  1, nx, ny, false, bc);
+        let d2: float = cx2 * (uip1 - 2.0 * uij + uim1)
+                      + cy2 * (ujp1 - 2.0 * uij + ujm1);
+        row = push(row, uij + dt * v0[i][j] + 0.5 * d2);
+      }
+    }
+    u1 = push(u1, row);
+  }
+  let uprev: float[][] = u0;
+  let ucur: float[][] = u1;
+  for (let step = 1; step < nt; step = step + 1) {
+    let unext: float[][] = [];
+    for (let i2 = 0; i2 < nx; i2 = i2 + 1) {
+      let row2: float[] = [];
+      for (let j2 = 0; j2 < ny; j2 = j2 + 1) {
+        if (i2 == 0 || i2 == nx - 1 || j2 == 0 || j2 == ny - 1) {
+          row2 = push(row2, bc);
+        } else {
+          let uc: float = ucur[i2][j2];
+          let uim1: float = pde_2d_val(ucur, i2, j2, -1, 0, nx, ny, false, bc);
+          let uip1: float = pde_2d_val(ucur, i2, j2,  1, 0, nx, ny, false, bc);
+          let ujm1: float = pde_2d_val(ucur, i2, j2, 0, -1, nx, ny, false, bc);
+          let ujp1: float = pde_2d_val(ucur, i2, j2, 0,  1, nx, ny, false, bc);
+          let d2: float = cx2 * (uip1 - 2.0 * uc + uim1)
+                        + cy2 * (ujp1 - 2.0 * uc + ujm1);
+          row2 = push(row2, 2.0 * uc - uprev[i2][j2] + d2);
+        }
+      }
+      unext = push(unext, row2);
+    }
+    uprev = ucur;
+    ucur = unext;
+  }
+  return ucur;
+}
+
+// 二维线性对流扩散：一阶迎风对流 + 二阶中心扩散。
+export func pde_advect_diffuse_2d(u0: float[][], dx: float, dy: float,
+                                  a: float, b: float, nu: float,
+                                  dt: float, nt: int, bc: float,
+                                  periodic: bool): float[][] {
+  let nx: int = len(u0);
+  let ny: int = len(u0[0]);
+  let cx: float = a * dt / dx;
+  let cy: float = b * dt / dy;
+  let rx: float = nu * dt / (dx * dx);
+  let ry: float = nu * dt / (dy * dy);
+  let u: float[][] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let unew: float[][] = [];
+    for (let i = 0; i < nx; i = i + 1) {
+      let row: float[] = [];
+      for (let j = 0; j < ny; j = j + 1) {
+        if (periodic == false && (i == 0 || i == nx - 1 || j == 0 || j == ny - 1)) {
+          row = push(row, bc);
+        } else {
+          let uij: float = u[i][j];
+          let ul: float = pde_2d_val(u, i, j, -1, 0, nx, ny, periodic, bc);
+          let ur: float = pde_2d_val(u, i, j,  1, 0, nx, ny, periodic, bc);
+          let ud: float = pde_2d_val(u, i, j, 0, -1, nx, ny, periodic, bc);
+          let up: float = pde_2d_val(u, i, j, 0,  1, nx, ny, periodic, bc);
+          let conv: float = 0.0;
+          if (a >= 0.0) { conv = conv + cx * (uij - ul); }
+          else          { conv = conv + cx * (ur - uij); }
+          if (b >= 0.0) { conv = conv + cy * (uij - ud); }
+          else          { conv = conv + cy * (up - uij); }
+          let diff: float = rx * (ur - 2.0 * uij + ul)
+                          + ry * (up - 2.0 * uij + ud);
+          row = push(row, uij - conv + diff);
+        }
+      }
+      unew = push(unew, row);
+    }
+    u = unew;
+  }
+  return u;
+}

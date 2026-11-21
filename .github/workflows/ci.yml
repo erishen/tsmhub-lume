@@ -1,0 +1,60 @@
+# tsmhub-lume CI —— 静态门禁 + 自包含冒烟 + docker 镜像构建/启动冒烟
+#
+# 全部自包含，不依赖外部服务 / 本地镜像 / 兄弟 checkout：
+#   - lume 二进制与 lume-core 由 make vendor 从 GitHub release 拉（v0.13.1）
+#   - docker 构建的 lume-bin 阶段也从 GitHub release 下载 lume（Linux x64 static）
+#   - 冒烟不要求上游 tsm-hub 在线（--no-upstream）
+#
+# 触发：push 到 main / 任意 PR。
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: 静态门禁 + 自包含冒烟
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 同步 lume 二进制 + lume-core（release fallback）
+        run: make vendor
+
+      - name: 静态门禁（lume --check + tsc + esbuild）
+        run: make test
+
+      - name: 自包含运行时冒烟（临时实例，测完清理）
+        run: make test-local
+
+  docker:
+    name: 镜像构建 + 启动冒烟
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 构建镜像（lume 从 release 下载）
+        run: docker build -t tsmhub-lume:test .
+
+      - name: 起容器并冒烟 BFF 自身端点
+        run: |
+          docker run -d --name tsmhub-lume-test -p 127.0.0.1:18108:18108 tsmhub-lume:test
+          sleep 3
+          curl -fsS http://127.0.0.1:18108/api/meta >/dev/null && echo "✓ /api/meta"
+          curl -fsS http://127.0.0.1:18108/api/health >/dev/null && echo "✓ /api/health"
+          curl -fsS http://127.0.0.1:18108/api/overview >/dev/null && echo "✓ /api/overview"
+          curl -fsS http://127.0.0.1:18108/ >/dev/null && echo "✓ /"
+          docker rm -f tsmhub-lume-test >/dev/null

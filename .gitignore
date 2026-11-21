@@ -1,0 +1,26 @@
+# 构建物
+www/app.js
+www/app.js.map
+
+# 依赖
+node_modules/
+
+# npm 项目的 lock 是依赖的确定性来源（Dockerfile npm ci / CI 都靠它）。
+# 用户级 ~/.gitignore_global 通常有 `package-lock.json` 规则（只在本机生效），
+# 这里显式取反放行，保证协作者拿到同一份 lock。
+!package-lock.json
+
+# vendor：lume 二进制不入库（体积大、平台相关、且是绝对路径软链），
+# lume-core/lib 入库；vendor 脚本重跑会重建软链与版本戳。
+vendor/lume/bin/lume
+vendor/.vendor-stamp
+.vendor-dl.*
+
+# 运行时 / 机密
+.data/
+logs/
+*.log
+.env
+.env.local
+
+.DS_Store

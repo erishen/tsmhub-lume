@@ -1,0 +1,38 @@
+# tsmhub-lume —— 本机容器运行（宿主机 127.0.0.1:18108）
+#
+# 接入已有的 tsm-hub 容器所在网络（tsm-hub_default），容器内用
+# http://tsm-hub:9070 访问上游（tsm-hub 只把 9070 暴露在自己的容器网络里，
+# 宿主侧映射的 19070 在容器里够不着）。管理口令走挂载文件，不进镜像、不上命令行。
+#
+#   make docker            # 构建 + 起容器
+#   make docker-logs       # 跟日志
+#   make docker-down       # 停掉
+
+services:
+  tsmhub-lume:
+    build:
+      context: .
+      args:
+        # lume 二进制从 GitHub release 下载（Dockerfile 里 ARG LUME_VERSION）。
+        LUME_VERSION: ${LUME_VERSION:-v0.13.1}
+    image: tsmhub-lume:dev
+    container_name: tsmhub-lume
+    ports:
+      - "127.0.0.1:18108:18108"
+    environment:
+      TSM_BASE: ${TSM_BASE:-http://tsm-hub:9070}
+      TSM_WRITE_GATE: ${TSM_WRITE_GATE:-off}
+      # 文件不存在时 admin_secret() 返回空串（上游未开鉴权的情况）。
+      TSM_ADMIN_FILE: /app/.data/admin.token
+      TSM_CLIENT_KEY: ${TSM_CLIENT_KEY:-}
+      LUME_BIND: 0.0.0.0
+      LUME_PORT: "18108"
+    volumes:
+      - ./.data:/app/.data:ro
+    networks:
+      - tsm-hub_default
+    restart: unless-stopped
+
+networks:
+  tsm-hub_default:
+    external: true
