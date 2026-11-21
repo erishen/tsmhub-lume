@@ -241,7 +241,7 @@ LLM 应用/客户端  --X-Api-Key: sk-tr-…-->  Lume /v1/*  --透传-->  tsm-hu
 容器里不需要宿主 Node：`Dockerfile` 两段构建，runtime 只有 alpine + lume 二进制
 （uid 10001，非 root），一个进程负责静态文件、SPA 回退和 `/api/*`。
 lume 二进制在构建期从 GitHub release 下载（Linux x64 static，`ARG LUME_VERSION`
-默认 `v0.13.1`，与 vendor 脚本同一版本），**不依赖本地镜像或兄弟 checkout**，
+默认 `v0.14.1`，与 vendor 脚本同一版本），**不依赖本地镜像或兄弟 checkout**，
 因此本机与 CI 行为一致。
 
 ```bash
@@ -258,5 +258,5 @@ docker compose down
 ## 版本
 
 `vendor/.vendor-stamp` 记录二进制版本与库来源。本地兄弟 checkout 存在时用它
-（本次实测：lume `0.14.0` + lume-core 工作树 `de7ce92`）；单独 clone 时从 GitHub
-release 拉 `LUME_VERSION` / `LUME_CORE_TAG`（默认 `v0.13.1`）。
+（本次实测：lume `0.14.1` + lume-core 工作树 `de7ce92`）；单独 clone 时从 GitHub
+release 拉 `LUME_VERSION` / `LUME_CORE_TAG`（默认 `v0.14.1`）。
