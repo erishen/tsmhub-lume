@@ -199,7 +199,9 @@ LLM 应用/客户端  --X-Api-Key: sk-tr-…-->  Lume /v1/*  --透传-->  tsm-hu
 > ✅ **流式（lume ≥ v0.14.1）**：`/v1/*` 用 `proxy_stream` 信封——Lume 连上游、
 > **读一块写一块**（真流式，不缓冲整响应）。`stream:true` 的 SSE 逐块到达
 > （首字节更快、内存 O(块)），OpenAI 客户端按正常 event-stream 消费。
-> Docker 用 v0.14.1（release 下载），本地 vendor 工作树同版，行为一致。
+> Docker 用 v0.14.2（release 下载），本地 vendor 工作树同版，行为一致。
+> v0.14.2 额外修复 `stringify` 浮点精度（最短 round-trip，对齐 Go json），
+> 管理面聚合端点的 `cost_usd`/`error_rate` 与上游完全一致。
 > 早于 v0.14.1 的 lume 无 `proxy_stream` 信封，`/v1/*` 回退为非流式（等完整
 > 响应一次性返回，功能可用但非 token 级）；长生成靠 `timeout: 300s` 兜底。
 
@@ -242,7 +244,7 @@ LLM 应用/客户端  --X-Api-Key: sk-tr-…-->  Lume /v1/*  --透传-->  tsm-hu
 容器里不需要宿主 Node：`Dockerfile` 两段构建，runtime 只有 alpine + lume 二进制
 （uid 10001，非 root），一个进程负责静态文件、SPA 回退和 `/api/*`。
 lume 二进制在构建期从 GitHub release 下载（Linux x64 static，`ARG LUME_VERSION`
-默认 `v0.14.1`，与 vendor 脚本同一版本），**不依赖本地镜像或兄弟 checkout**，
+默认 `v0.14.2`，与 vendor 脚本同一版本），**不依赖本地镜像或兄弟 checkout**，
 因此本机与 CI 行为一致。
 
 ```bash
@@ -260,4 +262,4 @@ docker compose down
 
 `vendor/.vendor-stamp` 记录二进制版本与库来源。本地兄弟 checkout 存在时用它
 （本次实测：lume `0.14.1` + lume-core 工作树 `de7ce92`）；单独 clone 时从 GitHub
-release 拉 `LUME_VERSION` / `LUME_CORE_TAG`（默认 `v0.14.1`）。
+release 拉 `LUME_VERSION` / `LUME_CORE_TAG`（默认 `v0.14.2`）。
