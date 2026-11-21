@@ -2,9 +2,10 @@
 import React, { useState } from 'react'
 import API from '../api'
 import { useAction, useLoad } from '../hooks'
-import { Badge, ErrorBox, Panel, Spinner, Table } from '../components'
+import { ErrorBox, Panel, Spinner, Table } from '../components'
 import { arr, g } from '../utils'
 import { ExternalMcpCandidates, ExternalSkillCandidates, ExternalToolsPanel } from './ExternalPanels'
+import { A2ATasks } from './A2ATasks'
 
 const CAP_TABS = ['tools', 'skills', 'mcps', 'fastpath', 'a2a', 'sandbox', 'platforms'] as const
 type CapTab = (typeof CAP_TABS)[number]
@@ -17,29 +18,6 @@ const LIST_KEYS: Record<CapTab, string[]> = {
   a2a: ['peers', 'tasks', 'capabilities'],
   sandbox: ['tools', 'containers'],
   platforms: ['platforms'],
-}
-
-// A2A 任务列表：单独加载（/api/a2a/tasks），与 overview 并排展示。
-function A2ATasks() {
-  const { data, error, loading, reload } = useLoad<any>(() => API.a2aTasks())
-  if (loading && !data) return <Spinner />
-  if (error) return <ErrorBox error={error} onRetry={reload} />
-  const tasks = arr(data, 'tasks')
-  return (
-    <Panel title={`A2A 任务 (${tasks.length})`}>
-      <Table
-        columns={[
-          { title: 'ID', render: (r) => <code>{String(g(r, 'id', '—'))}</code> },
-          { title: '类型', render: (r) => String(g(r, 'type', '—')) },
-          { title: '状态', render: (r) => <Badge value={g(r, 'status')} /> },
-          { title: '节点', render: (r) => String(g(r, 'agent', g(r, 'node', '—'))) },
-          { title: '时间', render: (r) => String(g(r, 'updated_at', g(r, 'ts', g(r, 'created_at', '—')))) },
-        ]}
-        rows={tasks}
-        empty="暂无 A2A 任务"
-      />
-    </Panel>
-  )
 }
 
 export function CapabilitiesPage({ role }: { role: string }) {

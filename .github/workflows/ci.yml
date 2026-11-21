@@ -51,13 +51,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
+      - name: 设置 Buildx（层缓存走 GHA）
+        uses: docker/setup-buildx-action@v3
 
-      - name: 构建镜像（lume 从 release 下载）
-        run: docker build -t tsmhub-lume:test .
+      - name: 构建镜像（lume 从 release 下载；层缓存复用 npm ci / lume 下载）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: tsmhub-lume:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: 起容器并冒烟 BFF 自身端点
         run: |
