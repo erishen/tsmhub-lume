@@ -52,10 +52,11 @@ export interface ChatReply {
 
 const REQUEST_TIMEOUT_MS = 25000
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<T> {
   // 前端超时要略短于 BFF 的 30s 上游超时，避免 BFF 卡死时页面无限 loading。
+  // balances 等端点上游串行探测可能较慢，调用方可传更长 timeoutMs。
   const ctrl = new AbortController()
-  const timer = window.setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS)
+  const timer = window.setTimeout(() => ctrl.abort(), timeoutMs)
   let r: Response
   try {
     r = await fetch(path, {
@@ -64,7 +65,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
     })
   } catch (e: any) {
-    if (e?.name === 'AbortError') throw new Error(`请求超时（${REQUEST_TIMEOUT_MS / 1000}s）`)
+    if (e?.name === 'AbortError') throw new Error(`请求超时（${timeoutMs / 1000}s）`)
     throw e
   } finally {
     window.clearTimeout(timer)
@@ -106,7 +107,7 @@ export const API = {
   deleteProvider: (id: string, role?: string) =>
     request<any>(withRole(`/api/providers/${encodeURIComponent(id)}`, role), { method: 'DELETE' }),
 
-  listBalances: () => request<any>('/api/balances'),
+  listBalances: () => request<any>('/api/balances', undefined, 60000),
   listModels: () => request<any>('/api/models'),
   listRecommendations: () => request<any>('/api/models/recommendations'),
 

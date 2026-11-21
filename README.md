@@ -9,6 +9,31 @@
 > **Lume 托管 + 服务端注入口令**：浏览器只与 Lume 同源通信，管理口令和 `sk-tr-` 客户端 Key
 > 都留在 Lume 进程里，不落到 `localStorage` 或页面源码。
 
+## 架构
+
+```
+浏览器 (React SPA, 不持口令)
+   │   同源 GET /app.js + /api/*
+   ▼
+┌────────────────────────────────────────────────┐
+│  Lume 单进程  tsmhub_lume.lume                  │
+│  ├─ server{}  docroot=./www  spa=true 回退      │
+│  ├─ 路由  GET/POST/DELETE/PATCH  /api/*         │
+│  │     └─ guard.check(execute|approve) 审批闸门  │
+│  └─ src/api.lume  上游客户端                     │
+│        X-Admin-Token / Bearer sk-tr-  服务端注入 │
+└────────────────────┬───────────────────────────┘
+                     │  http://tsm-hub:9070（docker 网络）
+                     ▼
+            tsm-hub 管理面 /api/admin/*
+            （Go 网关：Key + 智能路由 + 能力池 + 审计）
+```
+
+- **口令边界**：`X-Admin-Token`（`TSM_ADMIN`/`TSM_ADMIN_FILE`）与 `sk-tr-` 客户端 Key
+  （`TSM_CLIENT_KEY`）只在 `src/api.lume` 里读取，浏览器永远接触不到。
+- **写操作**：路由层先过 `guard.check`（lume-core 审批闸门，按 `?role=` 走
+  execute/approve 链），通过才 `api.proxy` 转发；读操作直接透传。
+
 ## 技术栈
 
 | 组件 | 角色 |
