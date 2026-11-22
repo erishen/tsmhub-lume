@@ -6,12 +6,13 @@
 #   runtime   alpine + lume 二进制 + 本项目入口/docroot，一个进程就是整站
 #            （静态文件 + SPA 回退 + 同源 JSON API），不需要 nginx / Node。
 #
-# lume 是静态 C 单二进制，从 GitHub release 下载（Linux x64 static，与 vendor
-# 脚本同一版本 LUME_VERSION），因此构建不依赖任何本地镜像/兄弟 checkout，
-# 本机与 CI 行为一致。想覆盖版本：--build-arg LUME_VERSION=vX.Y.Z。
+# lume 是静态 C 单二进制。release tarball 由 make docker 在宿主侧预下载并做
+# SHA256 校验（vendor/lume/lume-linux-x64-static.tar.gz，gitignore；升级版本改
+# Makefile 里的 LUME_LINUX_VERSION / LUME_LINUX_SHA256），这里 COPY 进来后再次
+# 校验再解包 —— 构建期零网络依赖（VM 内 apk CDN / GitHub 都可能被重置），
+# 本机与 CI 行为一致。
 
 ARG NODE_IMAGE=node:20-alpine
-ARG LUME_VERSION=v0.14.2
 ARG RUNTIME_IMAGE=alpine:3.20
 
 # ---------- 阶段 1：React 控制台 ----------
@@ -24,11 +25,11 @@ COPY src/web ./src/web
 COPY www/index.html www/app.css ./www/
 RUN npm run build
 
-# ---------- 阶段 1b：lume 二进制（GitHub release，Linux x64 static） ----------
+# ---------- 阶段 1b：lume 二进制（release tarball，宿主侧已预下载） ----------
 FROM ${RUNTIME_IMAGE} AS lume-bin
-ARG LUME_VERSION=v0.14.2
-RUN apk add --no-cache curl tar \
- && curl -fsSL -o /tmp/lume.tgz "https://github.com/erishen/lume/releases/download/${LUME_VERSION}/lume-linux-x64-static.tar.gz" \
+ARG LUME_SHA256=8da8cb7e307b303e490eb80ad92800b6362418bb882824b74c6939f0672fd3b0
+COPY vendor/lume/lume-linux-x64-static.tar.gz /tmp/lume.tgz
+RUN echo "${LUME_SHA256}  /tmp/lume.tgz" | sha256sum -c - \
  && tar -xzf /tmp/lume.tgz -C /tmp \
  && BIN="$(find /tmp -name lume -type f | head -1)" \
  && install -m 755 "$BIN" /usr/local/bin/lume \

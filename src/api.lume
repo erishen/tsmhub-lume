@@ -233,6 +233,11 @@ export func proxy(method, path, body) {
     };
   }
   if (get(r, "data") == null) {
+    // 2xx + 空 body 是合法响应（DELETE 204 / 200 no content）：原样放行，
+    // 不当作「非 JSON」误报 502。非 2xx 或非空但解析失败才转 502。
+    if (code >= 200 and code < 300 and len(str(get(r, "raw", ""))) == 0) {
+      return { status: code, type: "application/json", body: "" };
+    }
     return {
       status: 502,
       body: { ok: false, error: "上游返回了非 JSON 响应（HTTP " + str(code) + "）" },

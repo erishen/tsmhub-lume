@@ -14,6 +14,8 @@ node_modules/
 # lume-core/lib 入库；vendor 脚本重跑会重建软链与版本戳。
 vendor/lume/bin/lume
 vendor/.vendor-stamp
+# docker 构建用的 release tarball：make docker 宿主侧下载 + SHA256 校验（5MB）。
+vendor/lume/lume-linux-x64-static.tar.gz
 .vendor-dl.*
 
 # 运行时 / 机密

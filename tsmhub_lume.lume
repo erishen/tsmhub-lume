@@ -45,6 +45,26 @@ func qs(req) {
   return "?" + s;
 }
 
+// 路径参数重编码：框架捕获动态段（:id/:model/:name）时会先 url_decode，
+// 解码值可能含 "/"（如模型名 "Qwen/Qwen3-8B"——前端 encodeURIComponent 发来的
+// %2F 已被还原），直接拼进上游 URL 会把一个段拆成多段（404）或注入查询串。
+// 这里对会破坏 URL 结构的字符重新编码（RFC 3986 中 /?#% 在段内均为特殊字符）；
+// 其余字符（含 : @ 等 RFC 允许出现在段内的字符）原样保留。
+func seg(v) {
+  let s = str(v);
+  let out = "";
+  for (i in range(len(s))) {
+    let c = substr(s, i, 1);
+    if (c == "%") { out = out + "%25"; }
+    else if (c == "/") { out = out + "%2F"; }
+    else if (c == "?") { out = out + "%3F"; }
+    else if (c == "#") { out = out + "%23"; }
+    else if (c == " ") { out = out + "%20"; }
+    else { out = out + c; }
+  }
+  return out;
+}
+
 // 转发请求体；空体补 "{}"，tsm-hub 的 handler 都接受可空 body。
 func body_of(req) {
   let b = get(req, "body", null);
@@ -157,7 +177,7 @@ post "/api/providers", (req) => {
 delete "/api/providers/:id", (req) => {
   let g = guard.check(req, "approve");
   if (not get(g, "allowed", false)) { return deny(g); }
-  let id = str(get(req.params, "id", ""));
+  let id = seg(str(get(req.params, "id", "")));
   return api.proxy("DELETE", "/api/admin/providers/" + id + qs(req), null);
 };
 
@@ -175,7 +195,7 @@ post "/api/routes", (req) => {
 delete "/api/routes/:model", (req) => {
   let g = guard.check(req, "approve");
   if (not get(g, "allowed", false)) { return deny(g); }
-  let model = str(get(req.params, "model", ""));
+  let model = seg(str(get(req.params, "model", "")));
   return api.proxy("DELETE", "/api/admin/routes/" + model + qs(req), null);
 };
 
@@ -193,14 +213,14 @@ post "/api/keys", (req) => {
 post "/api/keys/:id/toggle", (req) => {
   let g = guard.check(req, "execute");
   if (not get(g, "allowed", false)) { return deny(g); }
-  let id = str(get(req.params, "id", ""));
+  let id = seg(str(get(req.params, "id", "")));
   return api.proxy("POST", "/api/admin/keys/" + id + "/toggle" + qs(req), body_of(req));
 };
 
 delete "/api/keys/:id", (req) => {
   let g = guard.check(req, "approve");
   if (not get(g, "allowed", false)) { return deny(g); }
-  let id = str(get(req.params, "id", ""));
+  let id = seg(str(get(req.params, "id", "")));
   return api.proxy("DELETE", "/api/admin/keys/" + id + qs(req), null);
 };
 
@@ -270,42 +290,42 @@ get "/api/a2a/tasks", (req) => {
 post "/api/fastpath/:name/promote", (req) => {
   let g = guard.check(req, "approve");
   if (not get(g, "allowed", false)) { return deny(g); }
-  let name = str(get(req.params, "name", ""));
+  let name = seg(str(get(req.params, "name", "")));
   return api.proxy("POST", "/api/admin/fastpath/" + name + "/promote" + qs(req), body_of(req));
 };
 
 delete "/api/fastpath/:name", (req) => {
   let g = guard.check(req, "approve");
   if (not get(g, "allowed", false)) { return deny(g); }
-  let name = str(get(req.params, "name", ""));
+  let name = seg(str(get(req.params, "name", "")));
   return api.proxy("DELETE", "/api/admin/fastpath/" + name + qs(req), null);
 };
 
 post "/api/mcps/:name", (req) => {
   let g = guard.check(req, "execute");
   if (not get(g, "allowed", false)) { return deny(g); }
-  let name = str(get(req.params, "name", ""));
+  let name = seg(str(get(req.params, "name", "")));
   return api.proxy("POST", "/api/admin/mcps/" + name + qs(req), body_of(req));
 };
 
 delete "/api/mcps/:name", (req) => {
   let g = guard.check(req, "execute");
   if (not get(g, "allowed", false)) { return deny(g); }
-  let name = str(get(req.params, "name", ""));
+  let name = seg(str(get(req.params, "name", "")));
   return api.proxy("DELETE", "/api/admin/mcps/" + name + qs(req), null);
 };
 
 get "/api/keys/:id/plaintext", (req) => {
   let g = guard.check(req, "approve");
   if (not get(g, "allowed", false)) { return deny(g); }
-  let id = str(get(req.params, "id", ""));
+  let id = seg(str(get(req.params, "id", "")));
   return api.proxy("GET", "/api/admin/keys/" + id + "/plaintext" + qs(req), null);
 };
 
 patch "/api/keys/:id", (req) => {
   let g = guard.check(req, "execute");
   if (not get(g, "allowed", false)) { return deny(g); }
-  let id = str(get(req.params, "id", ""));
+  let id = seg(str(get(req.params, "id", "")));
   return api.proxy("PATCH", "/api/admin/keys/" + id + qs(req), body_of(req));
 };
 
@@ -317,7 +337,7 @@ post "/api/models/refresh", (req) => {
 };
 
 get "/api/skills/:name", (req) => {
-  return api.proxy("GET", "/api/admin/skills/" + str(get(req.params, "name", "")) + qs(req), null);
+  return api.proxy("GET", "/api/admin/skills/" + seg(str(get(req.params, "name", ""))) + qs(req), null);
 };
 
 post "/api/a2a/invoke", (req) => {
@@ -344,13 +364,13 @@ get "/api/external-tools", (req) => {
 post "/api/external-tools/:name/adopt", (req) => {
   let g = guard.check(req, "approve");
   if (not get(g, "allowed", false)) { return deny(g); }
-  return api.proxy("POST", "/api/admin/external-tools/" + str(get(req.params, "name", "")) + "/adopt" + qs(req), body_of(req));
+  return api.proxy("POST", "/api/admin/external-tools/" + seg(str(get(req.params, "name", ""))) + "/adopt" + qs(req), body_of(req));
 };
 
 delete "/api/external-tools/:name", (req) => {
   let g = guard.check(req, "approve");
   if (not get(g, "allowed", false)) { return deny(g); }
-  return api.proxy("DELETE", "/api/admin/external-tools/" + str(get(req.params, "name", "")) + qs(req), null);
+  return api.proxy("DELETE", "/api/admin/external-tools/" + seg(str(get(req.params, "name", ""))) + qs(req), null);
 };
 
 get "/api/external-skills/candidates", (req) => {
@@ -370,13 +390,13 @@ post "/api/external-mcps/suggest", (req) => {
 post "/api/external-mcps/:server/adopt", (req) => {
   let g = guard.check(req, "approve");
   if (not get(g, "allowed", false)) { return deny(g); }
-  return api.proxy("POST", "/api/admin/external-mcps/" + str(get(req.params, "server", "")) + "/adopt" + qs(req), body_of(req));
+  return api.proxy("POST", "/api/admin/external-mcps/" + seg(str(get(req.params, "server", ""))) + "/adopt" + qs(req), body_of(req));
 };
 
 delete "/api/external-mcps/:server", (req) => {
   let g = guard.check(req, "approve");
   if (not get(g, "allowed", false)) { return deny(g); }
-  return api.proxy("DELETE", "/api/admin/external-mcps/" + str(get(req.params, "server", "")) + qs(req), null);
+  return api.proxy("DELETE", "/api/admin/external-mcps/" + seg(str(get(req.params, "server", ""))) + qs(req), null);
 };
 
 post "/api/fastpath/generate", (req) => {
