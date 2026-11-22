@@ -30,7 +30,7 @@ check: vendor
 	@echo "✓ lume 脚本校验通过"
 
 node_modules: package.json
-	@npm install --no-audit --no-fund
+	@npm ci --no-audit --no-fund
 
 typecheck: node_modules
 	@npm run typecheck
