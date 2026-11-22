@@ -114,8 +114,8 @@ func data_of(r) {
 // ---- 客户端 API 透传（token 转发服务）----
 // Lume 作为 LLM 客户端入口：客户端用自己 sk-tr- Key 直连 Lume /v1/*，
 // 这里把客户端 Key 转发到上游 /v1/*（上游做 Key 鉴权/路由）。
-// 注意：Lume 不把 Authorization 头暴露给脚本层（解析进专用字段做 Basic Auth），
-// 所以客户端 Key 用 X-Api-Key 头（上游原生支持）或 ?api_key= 回退。
+// Key 统一提取（见 client_auth）：X-Api-Key → ?api_key= → Authorization Bearer
+// （Lume 把完整 Authorization 暴露在 req.authorization，见 bridge.c）→ TSM_CLIENT_KEY。
 // 客户端没带 Key 时回退服务端 TSM_CLIENT_KEY（Playground 兼容）。
 // 响应按原样透传（content-type + 完整 body）；SSE 受 http_* 非流式限制，
 // 会等上游完成后一次性返回完整 event-stream（见 README「流式限制」）。

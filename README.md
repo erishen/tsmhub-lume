@@ -181,20 +181,20 @@ Lume 同时是 tsm-hub 的 **LLM 客户端入口**：客户端用自己的 `sk-t
 Lume `/v1/*`，Lume 把请求原样转发到上游（Key 鉴权 + 智能路由 + 转发都由上游做）。
 
 ```
-LLM 应用/客户端  --X-Api-Key: sk-tr-…-->  Lume /v1/*  --透传-->  tsm-hub /v1/*
+LLM 应用/客户端  --X-Api-Key / Authorization: Bearer: sk-tr-…-->  Lume /v1/*  --透传-->  tsm-hub /v1/*
 ```
 
 | 项 | 说明 |
 | --- | --- |
-| 鉴权 | 在上游做。Lume 只透传 `X-Api-Key` 头（或 `?api_key=` 回退），无 Key → 上游 401 |
+| 鉴权 | 在上游做。Lume 只透传客户端 Key（`X-Api-Key` / `?api_key=` / `Authorization: Bearer` 三选一），无 Key → 上游 401 `missing_key` |
 | 端点 | 整个 `/v1/*` 空间透传：`chat/completions`、`models`、`tools`、`tools/invoke`、`skills`、`mcps` |
 | 与管理面隔离 | `/v1/*` 不走 `?role=` 闸门——这是客户端 API；管理面 `/api/*` 才走闸门 |
-| Key 来源 | 客户端 `X-Api-Key` 头 → 未带则 `?api_key=` → 未带则回退服务端 `TSM_CLIENT_KEY` |
+| Key 来源 | 客户端 `X-Api-Key` / `Authorization: Bearer` 头 → 未带则 `?api_key=` → 未带则回退服务端 `TSM_CLIENT_KEY` |
 | 路径边界 | `/v1/*` 只接受 `/v1/` 前缀且无 `..` 路径段；Lume 在路由前规范化路径（`/v1/../api/keys` → `/api/keys`，落到管理路由含闸门），`client_path_ok` 再拦一次作防御纵深 |
 
-> ⚠️ **Lume 不把 `Authorization` 头暴露给脚本层**（它解析进专用字段做 Basic Auth），
-> 所以客户端 Key 要用 `X-Api-Key` 头（上游 `authenticate` 原生支持），而非
-> `Authorization: Bearer`。用 `Authorization` 直连 Lume 会拿不到 Key（401）。
+> ✅ **三种方式都接受**：`X-Api-Key`、`?api_key=`、**`Authorization: Bearer`**（Lume 把
+> 完整 `Authorization` 暴露在 `req.authorization`，见 `lang/bridge.c`；OpenAI 兼容客户端
+> 与 lume agent 用标准 Bearer 头即可）。三种都归一为上游认的 `Authorization: Bearer`。
 
 > ✅ **流式（lume ≥ v0.14.1）**：`/v1/*` 用 `proxy_stream` 信封——Lume 连上游、
 > **读一块写一块**（真流式，不缓冲整响应）。`stream:true` 的 SSE 逐块到达
