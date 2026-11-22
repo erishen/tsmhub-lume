@@ -50,7 +50,7 @@ src/api.lume              tsm-hub 上游客户端 + 首屏聚合（服务端持�
 src/guard.lume            写操作闸门（lume-core/lib/approval.lume）
 src/web/api.ts            前端 API 客户端（同源，无 Token）
 src/web/app.tsx           React 控制台外壳（路由 + 布局 + 错误边界）
-src/web/pages/            13 个页面（总览/Providers/余额/路由/Keys/用量/模型/推荐/监控/审计/能力池/测试/设置）
+src/web/pages/            15 个页面（总览/Providers/余额/路由/Keys/用量/模型/推荐/监控/审计/记忆/能力池/Agent/测试/设置）
 src/web/components.tsx    通用展示组件；src/web/utils.ts 纯工具；src/web/hooks.ts 数据/操作钩子
 www/                      docroot：index.html + app.css + 构建产物 app.js
 scripts/vendor_lume.sh    同步 lume 二进制与 lume-core/lib 到 vendor/
@@ -131,6 +131,7 @@ make stop        # 停掉 8097 上的服务
 | `TSM_WRITE_GATE` | `off` | 写操作闸门：`off` / `execute` / `approve` |
 | `LUME_BIND` / `LUME_PORT` | `127.0.0.1` / `8097` | 监听地址 |
 | `HTPASSWD_FILE` | 空 | 设置后启用 Basic Auth（对外暴露时必须） |
+| `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL` / `LLM_TIMEOUT` | 见下文 | lume agent（`/react/api/chat`）的模型上游配置，见「lume agent」一节 |
 
 ## API
 
@@ -237,9 +238,44 @@ LLM 应用/客户端  --X-Api-Key / Authorization: Bearer: sk-tr-…-->  Lume /v
 **生产建议**：通过 `.env` 设 `TSM_WRITE_GATE=execute`（已 gitignore，不随镜像/仓库发布）；
 多用户环境再加 `HTPASSWD_FILE` 做 Basic Auth，身份与流程两层都齐。
 
+## lume agent（内置 Agent 聊天）
+
+控制台「Agent」页接的是 **lume 框架原生的 agent 栈**（agent-httpd 静态链进 lume
+二进制）：`POST /react/api/chat`，同源 SSE（note / delta / error / done 信封）。
+该端点由框架层在路由分发前拦截，Lume 脚本层无需（也无法）注册它。
+
+- **模型上游**：`LLM_API_URL`（OpenAI 兼容）+ `LLM_API_KEY` + `LLM_MODEL` +
+  `LLM_TIMEOUT`。Docker 里默认 `http://tsm-hub:9070/v1`，Key 复用 `TSM_CLIENT_KEY`
+  （compose 里映射为 `LLM_API_KEY`）；本地 `make dev` 时写进项目根 `.env`
+  （lume 从运行目录读取）。**`LLM_API_KEY` 留空 = 内置离线演示引擎**，可离线
+  开发/测试，不花钱。
+- **控制台只读工具**：`tsmhub_lume.lume` 注册了 5 个只读 tool（overview / usage /
+  routes / keys / provider_health），agent 的 ReAct 循环可直接调用，回答「多少
+  key、今天花了多少」这类控制台问题；**不拥有任何写权限**——写操作仍走
+  `/api/*` 的 `?role=` 闸门路由。
+- **router 目录同步**：`LLM_API_URL` 指向 tsm-hub 时，启动会把上游 `GET /v1/tools`
+  目录同步为代理工具（调用时转发 `POST /v1/tools/invoke`），skills/MCP 一并挂载；
+  与本地内建/脚本工具同名时本地实现优先。
+- **会话记忆**：前端按 `sess-<hex>` 生成 sessionId，同一 id 服务端重放历史上下文；
+  「新会话」按钮换 id 即清空。
+- **安全边界**：端点有同源 + POST-only 校验（`chat_origin_ok`），跨域 POST 403；
+  但它不走 `?role=` 闸门——对外部署务必配 `HTPASSWD_FILE`，成本由 Key 的额度
+  约束兜底。LLM 凭据只在服务端，浏览器不可见。
+
+| 变量 | 默认（compose） | 说明 |
+| --- | --- | --- |
+| `LLM_API_URL` | `http://tsm-hub:9070/v1` | agent 的 OpenAI 兼容上游 |
+| `LLM_API_KEY` | 复用 `TSM_CLIENT_KEY` | 留空 = 离线演示引擎 |
+| `LLM_MODEL` | `auto` | 模型名（走 tsm-hub 路由表） |
+| `LLM_TIMEOUT` | `120` | 单次生成超时秒数 |
+
+> 注意：这些变量由 agent-httpd 在 **C 层**直接读取，不经过 Lume 的 `env()`——
+> 所以名字里含 `API_KEY` 在这里**不会**被屏蔽（那条屏蔽规则只约束 DSL 里的
+> `env()` 调用）。
+
 ## 控制台页面
 
-总览 / Providers / 余额 / 路由表 / Keys / 用量 / 模型 / 推荐 / 监控 / 审计 / 记忆 / 能力池（tools·skills·mcps·fastpath·a2a·sandbox·platforms，含调用/详情/增删/提升/删除/外部候选采纳/生成写操作）/ 测试 / 设置。
+总览 / Providers / 余额 / 路由表 / Keys / 用量 / 模型 / 推荐 / 监控 / 审计 / 记忆 / 能力池（tools·skills·mcps·fastpath·a2a·sandbox·platforms，含调用/详情/增删/提升/删除/外部候选采纳/生成写操作）/ **Agent（lume 原生聊天，见上节）** / 测试 / 设置。
 深色主题、响应式侧栏、30 秒自动刷新上游健康状态。
 
 ## Docker

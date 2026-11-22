@@ -14,6 +14,7 @@ export const NAV = [
   { key: 'audit', label: '审计', icon: '≡' },
   { key: 'memory', label: '记忆', icon: '≣' },
   { key: 'capabilities', label: '能力池', icon: '✦' },
+  { key: 'agent', label: 'Agent', icon: '✷' },
   { key: 'playground', label: '测试', icon: '▷' },
   { key: 'settings', label: '设置', icon: '⚙' },
 ] as const

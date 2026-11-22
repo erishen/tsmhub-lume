@@ -14,6 +14,7 @@ import { ObservabilityPage } from './pages/Observability'
 import { AuditPage } from './pages/Audit'
 import { CapabilitiesPage } from './pages/Capabilities'
 import { PlaygroundPage } from './pages/Playground'
+import { AgentPage } from './pages/Agent'
 import { BalancesPage } from './pages/Balances'
 import { ModelsPage } from './pages/Models'
 import { RecommendationsPage } from './pages/Recommendations'
@@ -70,6 +71,7 @@ export function App() {
       case 'audit': return <AuditPage />
       case 'memory': return <MemoryPage role={role} />
       case 'capabilities': return <CapabilitiesPage role={role} />
+      case 'agent': return <AgentPage />
       case 'playground': return <PlaygroundPage meta={meta} />
       case 'settings': return <SettingsPage role={role} />
       default: return <OverviewPage />
@@ -173,6 +175,7 @@ export {
   RecommendationsPage,
   SettingsPage,
   MemoryPage,
+  AgentPage,
 }
 
 // 类型再导出：页面模块引用的类型保持可从 './app' 解析。

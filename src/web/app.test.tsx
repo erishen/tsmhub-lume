@@ -29,7 +29,9 @@ import {
   RecommendationsPage,
   SettingsPage,
   MemoryPage,
+  AgentPage,
 } from './app'
+import { parseAgentSse, newSessionId } from './agent'
 
 beforeEach(() => {
   localStorage.clear()
@@ -536,6 +538,104 @@ describe('BalancesPage / ModelsPage / RecommendationsPage / SettingsPage', () =>
     expect(await screen.findByText('会话记忆 (1)')).toBeTruthy()
     expect(screen.getByText('k1')).toBeTruthy()
     expect(screen.getByText('清空')).toBeTruthy()
+  })
+})
+
+// ---------- lume agent：SSE 解析与聊天页 ----------
+
+describe('parseAgentSse', () => {
+  it('解析 delta/note/done 信封，忽略注释心跳与非 data 行', () => {
+    const r = parseAgentSse(
+      'data: {"t":"delta","d":"你"}\n\n:\n\ndata: {"t":"note","d":"调用工具"}\n\nevent: ping\ndata: {"t":"done"}\n\n',
+    )
+    expect(r.events).toEqual([
+      { t: 'delta', d: '你' },
+      { t: 'note', d: '调用工具' },
+      { t: 'done' },
+    ])
+    expect(r.rest).toBe('')
+  })
+
+  it('半包保留在 rest，拼接后完整解析；噪声/坏 JSON 不抛异常', () => {
+    const a = parseAgentSse('data: {"t":"del')
+    expect(a.events).toEqual([])
+    const b = parseAgentSse(a.rest + 'ta","d":"hi"}\n\ndata: junk\n\ndata: [not json]\n\n')
+    expect(b.events).toEqual([{ t: 'delta', d: 'hi' }])
+  })
+
+  it('未知事件类型与缺失 d 字段被丢弃，\\r\\n 兼容', () => {
+    const r = parseAgentSse('data: {"t":"weird"}\r\n\r\ndata: {"t":"delta"}\r\n\r\ndata: {"t":"error","d":"boom"}\r\n\r\n')
+    expect(r.events).toEqual([{ t: 'error', d: 'boom' }])
+  })
+
+  it('newSessionId 生成 sess- 前缀且只含服务端允许的字符', () => {
+    const id = newSessionId()
+    expect(id.startsWith('sess-')).toBe(true)
+    expect(/^[A-Za-z0-9\-_+]+$/.test(id)).toBe(true)
+  })
+})
+
+describe('AgentPage', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function sseReader(chunks: string[]) {
+    let i = 0
+    return {
+      read: async () =>
+        i < chunks.length
+          ? { done: false, value: new TextEncoder().encode(chunks[i++]) }
+          : { done: true, value: undefined },
+    }
+  }
+
+  it('发送消息并流式渲染回复；请求体携带 message + sessionId', async () => {
+    const bodies: any[] = []
+    const fetchMock = vi.fn(async (_url: string, init?: any) => {
+      bodies.push(JSON.parse(init.body))
+      return { ok: true, status: 200, body: { getReader: () => sseReader([
+        'data: {"t":"note","d":"round 1"}\n\n',
+        'data: {"t":"delta","d":"你好"}\n\n',
+        'data: {"t":"delta","d":"，我是 agent"}\n\n',
+        'data: {"t":"done"}\n\n',
+      ]) } }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<AgentPage />)
+    fireEvent.change(screen.getByPlaceholderText(/向 Agent 提问/), { target: { value: '在吗' } })
+    fireEvent.click(screen.getByText('发送'))
+    expect(await screen.findByText('你好，我是 agent')).toBeTruthy()
+    expect(screen.getByText('你')).toBeTruthy()
+    expect(bodies[0].message).toBe('在吗')
+    expect(bodies[0].sessionId).toMatch(/^sess-[0-9a-f]{16}$/)
+    // 流结束后状态行清空、发送按钮恢复
+    expect(screen.getByText('发送')).toBeTruthy()
+  })
+
+  it('HTTP 失败显示错误提示，空占位气泡被移除', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 403, text: async () => 'Forbidden' })))
+    render(<AgentPage />)
+    fireEvent.change(screen.getByPlaceholderText(/向 Agent 提问/), { target: { value: 'hi' } })
+    fireEvent.click(screen.getByText('发送'))
+    expect(await screen.findByText(/Agent 端点不可用/)).toBeTruthy()
+    expect(screen.queryByText('…')).toBeNull()
+  })
+
+  it('新会话清空消息并更换 sessionId', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, body: { getReader: () => sseReader([
+      'data: {"t":"delta","d":"ok"}\n\n',
+      'data: {"t":"done"}\n\n',
+    ]) } }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<AgentPage />)
+    fireEvent.change(screen.getByPlaceholderText(/向 Agent 提问/), { target: { value: 'q1' } })
+    fireEvent.click(screen.getByText('发送'))
+    await screen.findByText('ok')
+    const firstSid = screen.getByText(/会话 sess-/).textContent
+    fireEvent.click(screen.getByText('新会话'))
+    expect(screen.getByText(/开始与 Agent 对话/)).toBeTruthy()
+    expect(screen.getByText(/会话 sess-/).textContent).not.toBe(firstSid)
   })
 })
 

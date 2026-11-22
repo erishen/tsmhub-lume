@@ -191,3 +191,31 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   .content { padding: 14px; }
   .topbar { padding: 0 14px; }
 }
+
+/* ---------- Agent 聊天页 ---------- */
+.chat-log {
+  display: flex; flex-direction: column; gap: 10px;
+  max-height: 480px; overflow-y: auto;
+  padding: 4px 2px; margin-bottom: 10px;
+}
+.chat-msg { max-width: 78%; padding: 8px 12px; border-radius: 10px; font-size: 13px; }
+.chat-msg.user {
+  align-self: flex-end;
+  background: var(--accent-2); color: #fff;
+  border-bottom-right-radius: 3px;
+}
+.chat-msg.agent {
+  align-self: flex-start;
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-bottom-left-radius: 3px;
+}
+.chat-role { font-size: 10px; opacity: .7; margin-bottom: 2px; }
+.chat-text { white-space: pre-wrap; word-break: break-word; }
+.chat-note {
+  font-size: 11px; color: var(--muted);
+  background: var(--panel-2); border-radius: 6px;
+  padding: 6px 10px; margin-bottom: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.chat-input { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 8px; }
+.chat-input textarea { flex: 1; resize: vertical; }

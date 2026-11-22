@@ -13,6 +13,8 @@
 //   DELETE /api/providers/:id        删除 Provider（approve）
 //   GET    /api/settings /api/providers /routes /keys /usage /observability /audit-logs ...
 //   POST   /api/chat                 可选 Playground（TSM_CLIENT_KEY）
+//   POST   /react/api/chat           lume 原生 agent 聊天（框架层拦截，脚本不注册；
+//                                    工具=上方只读 tool + LLM_API_URL 上游）
 //   GET/POST /v1/*                    token 转发服务：LLM 客户端 API 透传到上游 /v1/*
 //
 // 环境变量见 .env.example / README.md。
@@ -59,6 +61,51 @@ func deny(g) {
     body: { ok: false, error: str(get(g, "reason", "写操作被审批闸门拒绝")), gate: g },
   };
 }
+
+// ---- lume agent 控制台工具（只读，框架原生 /react/api/chat 的 ReAct 循环可调用）----
+// 模型上游由 LLM_API_URL / LLM_API_KEY / LLM_MODEL 决定（见 .env.example / README）。
+// 这里只注册只读工具：agent 能回答「多少 key / 路由 / 用量」这类控制台问题；
+// 写操作仍走下方 ?role= 闸门路由——agent 不拥有任何写权限。
+// 注意：LLM_API_KEY 由 agent-httpd 在 C 层直接读取，不经过 DSL 的 env()，
+// 名字含 API_KEY 不受「env() 屏蔽机密变量名」规则影响。
+
+// fetch_json 结果转成给模型看的紧凑载荷：ok + data（失败带 status/err）。
+func tool_data(r) {
+  return {
+    ok: get(r, "ok", false),
+    status: int(get(r, "status", 0)),
+    data: get(r, "data", null),
+    err: str(get(r, "err", "")),
+  };
+}
+
+tool "tsm_overview", "Get the tsm-hub gateway console overview: provider/route/key counts, today and total token usage and cost, provider health and recent audit logs.",
+  {}, func(arg) {
+    return tool_data(api.fetch_json("GET", "/api/admin/overview", null, false));
+  };
+
+tool "tsm_usage", "Get tsm-hub usage statistics aggregated per day for the last N days (1-90, default 7).",
+  { days: int }, func(arg) {
+    let days = int(get(arg, "days", 7));
+    if (days <= 0) { days = 7; }
+    if (days > 90) { days = 90; }
+    return tool_data(api.fetch_json("GET", "/api/admin/usage?days=" + str(days), null, false));
+  };
+
+tool "tsm_routes", "List the tsm-hub model routing table (model -> provider targets with failover strategy).",
+  {}, func(arg) {
+    return tool_data(api.fetch_json("GET", "/api/admin/routes", null, false));
+  };
+
+tool "tsm_keys", "List tsm-hub issued API keys (id/name/prefix/quota/enabled; never includes plaintext keys).",
+  {}, func(arg) {
+    return tool_data(api.fetch_json("GET", "/api/admin/keys", null, false));
+  };
+
+tool "tsm_provider_health", "Get health status of all upstream providers (healthy/half-open, failure counts, last errors).",
+  {}, func(arg) {
+    return tool_data(api.fetch_json("GET", "/api/admin/health", null, false));
+  };
 
 // ---- 健康 / 元信息 / 首屏 ----
 get "/api/health", (req) => {

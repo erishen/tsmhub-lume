@@ -25,6 +25,12 @@ services:
       # 文件不存在时 admin_secret() 返回空串（上游未开鉴权的情况）。
       TSM_ADMIN_FILE: /app/.data/admin.token
       TSM_CLIENT_KEY: ${TSM_CLIENT_KEY:-}
+      # lume agent（/react/api/chat）：OpenAI 兼容上游 = tsm-hub，Key 复用 TSM_CLIENT_KEY。
+      # LLM_API_KEY 留空 = 内置离线演示引擎（agent-httpd 在 C 层读取，不走 DSL env()）。
+      LLM_API_URL: ${LLM_API_URL:-http://tsm-hub:9070/v1}
+      LLM_MODEL: ${LLM_MODEL:-auto}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-120}
+      LLM_API_KEY: ${TSM_CLIENT_KEY:-}
       LUME_BIND: 0.0.0.0
       LUME_PORT: "18108"
     volumes:
