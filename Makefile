@@ -20,6 +20,19 @@ LUME     ?= vendor/lume/bin/lume
 PORT     ?= 8097
 TSM_BASE ?= http://127.0.0.1:9070
 
+# docker 构建用的 lume release tarball：宿主侧下载 + SHA256 校验（宿主网络可控、
+# 可走代理），Dockerfile 只 COPY + 二次校验 —— 构建期不再访问网络（VM 内 apk
+# CDN 与 GitHub 都可能被重置）。升级 lume：改下面两个值后删掉 tarball 重跑。
+LUME_LINUX_VERSION := v0.14.2
+LUME_LINUX_SHA256 := 8da8cb7e307b303e490eb80ad92800b6362418bb882824b74c6939f0672fd3b0
+LUME_LINUX_TGZ := vendor/lume/lume-linux-x64-static.tar.gz
+
+$(LUME_LINUX_TGZ):
+	@echo "▶ 下载 lume $(LUME_LINUX_VERSION) linux-x64-static（宿主侧）"
+	curl -fsSL --http1.1 --retry 3 --retry-all-errors -C - -o $@ \
+	  "https://github.com/erishen/lume/releases/download/$(LUME_LINUX_VERSION)/lume-linux-x64-static.tar.gz"
+	@echo "$(LUME_LINUX_SHA256)  $@" | shasum -a 256 -c -
+
 .PHONY: vendor check typecheck ui node_modules test-fe test test-local run dev stop smoke clean logs-clean docker docker-logs docker-down
 
 vendor:
@@ -66,7 +79,7 @@ smoke:
 	@bash scripts/smoke.sh http://127.0.0.1:$(PORT)
 
 # 容器：http://127.0.0.1:18108；上游默认走 host.docker.internal:9070。
-docker:
+docker: $(LUME_LINUX_TGZ)
 	@docker compose up -d --build
 	@echo "▶ http://127.0.0.1:18108"
 
