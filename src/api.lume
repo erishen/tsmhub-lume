@@ -143,6 +143,22 @@ func header_ci(req, want) {
   return "";
 }
 
+// 客户端 Key 统一提取（/v1/* 认证入口）：
+//   1. X-Api-Key 头（上游 authenticate 原生支持）
+//   2. ?api_key= query
+//   3. Authorization: Bearer <key>（OpenAI 兼容客户端 / lume agent 的标准头；
+//      Lume 把完整 Authorization 暴露在 req.authorization，见 bridge.c）
+//   4. 服务端 TSM_CLIENT_KEY（Playground 兼容）
+func client_auth(req) {
+  let auth = header_ci(req, "x-api-key");
+  if (len(auth) > 0) { return auth; }
+  auth = str(get(get(req, "query_params", {}), "api_key", ""));
+  if (len(auth) > 0) { return auth; }
+  let az = str(get(req, "authorization", ""));
+  if (len(az) >= 7 and substr(az, 0, 7) == "Bearer ") { return substr(az, 7, len(az) - 7); }
+  return client_key();
+}
+
 // 透传转发：长生成/SSE 完整体放宽超时与上限。
 func upstream_v1(method, path, body, auth) {
   let url = base() + path;
@@ -163,18 +179,11 @@ export func client_proxy(method, path, req) {
   if (!client_path_ok(path)) {
     return { status: 400, type: "application/json", body: stringify({ error: "invalid path" }) };
   }
-  // Lume 不把 Authorization 暴露给脚本层（它解析进专用字段做 Basic Auth）。
-  // 客户端 Key 从 X-Api-Key 头取（上游 authenticate 原生支持）；回退 ?api_key=。
-  let auth = header_ci(req, "x-api-key");
-  if (len(auth) == 0) {
-    auth = str(get(get(req, "query_params", {}), "api_key", ""));
-  }
-  if (len(auth) == 0) {
-    let k = client_key();
-    if (len(k) > 0) { auth = "Bearer " + k; }
-  } else {
-    auth = "Bearer " + auth;
-  }
+  // 客户端 Key 从 X-Api-Key / ?api_key= / Authorization Bearer / TSM_CLIENT_KEY
+  // 依次取（见 client_auth）；统一拼成上游认的 Bearer。
+  let key = client_auth(req);
+  let auth = "";
+  if (len(key) > 0) { auth = "Bearer " + key; }
   let body = null;
   let b = get(req, "body", null);
   if (b != null) { body = str(b); }
@@ -202,11 +211,7 @@ export func client_stream(method, req) {
   if (!client_path_ok(path)) {
     return { status: 400, type: "application/json", body: stringify({ error: "invalid path" }) };
   }
-  let auth = header_ci(req, "x-api-key");
-  if (len(auth) == 0) {
-    auth = str(get(get(req, "query_params", {}), "api_key", ""));
-  }
-  if (len(auth) == 0) { auth = client_key(); }
+  let auth = client_auth(req);
   let m = { url: base() + path, method: method, timeout: 300, allow_private: true };
   put(m, "headers", { "Accept": "application/json", "Authorization": "Bearer " + auth });
   let b = get(req, "body", null);
