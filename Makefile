@@ -73,10 +73,12 @@ test-local: test
 	@bash scripts/smoke_local.sh
 
 run: ui
+	@bash scripts/guard_expose.sh local
 	@echo "▶ http://127.0.0.1:$(PORT)  (上游 $(TSM_BASE))"
 	@LUME_PORT=$(PORT) TSM_BASE=$(TSM_BASE) $(LUME) tsmhub_lume.lume
 
 dev: test
+	@bash scripts/guard_expose.sh local
 	@echo "▶ http://127.0.0.1:$(PORT)  (上游 $(TSM_BASE))"
 	@LUME_PORT=$(PORT) TSM_BASE=$(TSM_BASE) $(LUME) tsmhub_lume.lume
 
@@ -89,6 +91,7 @@ smoke:
 
 # 容器：http://127.0.0.1:18108；上游默认走 host.docker.internal:9070。
 docker: $(LUME_LINUX_TGZ)
+	@bash scripts/guard_expose.sh docker
 	@docker compose up -d --build
 	@echo "▶ http://127.0.0.1:18108"
 

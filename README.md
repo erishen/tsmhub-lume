@@ -249,6 +249,12 @@ make auth     # 交互式生成 .data/htpasswd：bcrypt 哈希 + 第三列角色
 docker compose up -d   # 环境变量变更，无需重建镜像
 ```
 
+> 🛡️ **启动安全守卫**：`make run` / `make dev` / `make docker` 启动前会跑
+> `scripts/guard_expose.sh`——检测到**对外可达却没配 Basic Auth** 时直接拒绝启动：
+> 本机模式看 `LUME_BIND` 是否非回环，docker 模式看 compose 端口映射的宿主侧地址。
+> 容器内 `LUME_BIND=0.0.0.0` 是端口映射必需、不算对外，真正边界是宿主映射的
+> `127.0.0.1`。受控内网 + 外部反代鉴权等场景可显式设 `EXPOSE_GUARD=off` 豁免。
+
 开启后 `req.user` / `req.roles` 由框架从 htpasswd 填充，**写角色只认第三列**
 （`user:hash:human_admin,agent_operator`），前端 `?role=` 被完全忽略；未配角色列
 的账号登录后仍无法执行任何写操作（fail closed）。顶栏角色选择器会自动隐藏，
