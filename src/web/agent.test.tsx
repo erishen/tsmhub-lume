@@ -4,7 +4,10 @@ import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-libra
 import React from 'react'
 import { jsonResponse, installFetch } from './test-utils'
 import { AgentPage } from './app'
-import { parseAgentSse, newSessionId, agentChat, loadSessionId, saveSessionId, SESSION_KEY } from './agent'
+import {
+  parseAgentSse, newSessionId, agentChat, loadSessionId, saveSessionId, SESSION_KEY,
+  listHistories, loadHistory, saveHistory, deleteHistory, HISTORY_KEY,
+} from './agent'
 
 beforeEach(() => {
   localStorage.clear()
@@ -111,6 +114,61 @@ describe('parseAgentSse', () => {
   })
 })
 
+describe('会话历史存档', () => {
+  it('保存后可读回、按更新排序，标题取首条用户提问', () => {
+    const a = 'sess-aaa', b = 'sess-bbb'
+    saveHistory(a, [
+      { role: 'user', text: '第一条问题' },
+      { role: 'agent', text: '回答' },
+    ])
+    saveHistory(b, [{ role: 'user', text: '第二条问题' }])
+    const all = listHistories()
+    expect(all.length).toBe(2)
+    // 最近保存的排前面
+    expect(all[0].id).toBe(b)
+    expect(all[0].title).toBe('第二条问题')
+    expect(all[1].title).toBe('第一条问题')
+    expect(loadHistory(a)?.messages[1].text).toBe('回答')
+  })
+
+  it('同 id 覆盖而非重复，删除只移除目标', () => {
+    const a = 'sess-aaa', b = 'sess-bbb'
+    saveHistory(a, [{ role: 'user', text: 'v1' }])
+    saveHistory(a, [{ role: 'user', text: 'v2' }])
+    expect(listHistories().length).toBe(1)
+    expect(loadHistory(a)?.title).toBe('v2')
+    saveHistory(b, [{ role: 'user', text: 'b' }])
+    deleteHistory(a)
+    expect(loadHistory(a)).toBeNull()
+    expect(loadHistory(b)?.title).toBe('b')
+  })
+
+  it('脏数据整条跳过，不污染列表', () => {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify([
+      { id: 'sess-ok', title: '好', messages: [{ role: 'user', text: 'q' }], updated: 1 },
+      { id: 'bad id', title: '坏', messages: [], updated: 2 },
+      { id: 'sess-bad-msg', title: '坏消息', messages: [{ role: 'user', text: 123 }], updated: 3 },
+    ]))
+    const all = listHistories()
+    expect(all.length).toBe(1)
+    expect(all[0].id).toBe('sess-ok')
+  })
+
+  it('超过 20 条上限时丢弃最旧的', () => {
+    for (let i = 0; i < 25; i++) {
+      saveHistory(`sess-${i}`, [{ role: 'user', text: `q${i}` }])
+      // 让每条 updated 递增，确保排序可预测
+      const arr = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]')
+      arr[0].updated = i
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(arr))
+    }
+    const all = listHistories()
+    expect(all.length).toBe(20)
+    expect(all[0].title).toBe('q24')
+    expect(all.some((r) => r.title === 'q0')).toBe(false)
+  })
+})
+
 describe('AgentPage', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -210,8 +268,10 @@ describe('AgentPage', () => {
     }))
     render(<AgentPage />)
     await screen.findByRole('option', { name: 'agnes-2.0-flash' })
-    // 空 model 的默认路由不列出；其余按名字排序
-    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual([
+    // 空 model 的默认路由不列出；其余按名字排序。只看「模型」下拉，
+    // 不要被新增的「历史会话」下拉里的 option 干扰。
+    const modelSelect = screen.getByLabelText('模型')
+    expect(Array.from(modelSelect.querySelectorAll('option')).map((o) => o.textContent)).toEqual([
       'auto（tsm-hub 默认路由）', 'agnes-2.0-flash', 'smart',
     ])
     fireEvent.change(screen.getByLabelText('模型'), { target: { value: 'agnes-2.0-flash' } })
@@ -339,6 +399,39 @@ describe('AgentPage', () => {
     expect(bodies[2]).toEqual({ message: 'q1', sessionId: bodies[0].sessionId })
   })
 
+  it('换上下文重试：换新 sessionId 重发该轮提问，会话显示与持久化都更新', async () => {
+    const bodies: any[] = []
+    let round = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: any) => {
+      if (String(url).startsWith('/api/routes')) return jsonResponse({ routes: [] })
+      bodies.push(JSON.parse(init.body))
+      round++
+      return { ok: true, status: 200, body: { getReader: () => sseReader([
+        `data: {"t":"delta","d":"回答${round}"}\n\n`,
+        'data: {"t":"done"}\n\n',
+      ]) } }
+    }))
+    render(<AgentPage />)
+    const input = screen.getByPlaceholderText(/向 Agent 提问/)
+    fireEvent.change(input, { target: { value: 'q1' } })
+    fireEvent.click(screen.getByText('发送'))
+    expect(await screen.findByText('回答1')).toBeTruthy()
+    const firstSid = bodies[0].sessionId
+    expect(screen.getByText(/会话 sess-/).textContent).toContain(firstSid)
+
+    fireEvent.click(screen.getByRole('button', { name: '换上下文重试第 2 条回答' }))
+    expect(await screen.findByText('回答2')).toBeTruthy()
+    // 关键：请求体必须用新 sessionId（不是旧的），否则换上下文失效。
+    expect(bodies[1]).toEqual({ message: 'q1', sessionId: expect.not.stringMatching(firstSid) })
+    expect(bodies[1].sessionId).not.toBe(firstSid)
+    // 页面显示的会话 id 与持久化值同步为新 id。
+    expect(screen.getByText(/会话 sess-/).textContent).toContain(bodies[1].sessionId)
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe(bodies[1].sessionId)
+    // 前序对话仍在（只是不再进入服务端记忆）。历史下拉 option 也含 q1，
+    // 所以限定在聊天气泡里查。
+    expect(Array.from(document.querySelectorAll('.chat-msg.user')).some((el) => (el.textContent || '').includes('q1'))).toBe(true)
+  })
+
   it('流式输出期间复制/重试按钮禁用，避免复制到半截回答', async () => {
     let release: (() => void) | undefined
     const gate = new Promise<void>((res) => { release = res })
@@ -362,5 +455,60 @@ describe('AgentPage', () => {
     expect((screen.getByRole('button', { name: '重试第 2 条回答' }) as HTMLButtonElement).disabled).toBe(true)
     release?.()
     await waitFor(() => expect(screen.getByText('发送')).toBeTruthy())
+  })
+
+  it('一轮对话结束后自动存档；切换会话载入对应记录', async () => {
+    const stub = () => vi.stubGlobal('fetch', vi.fn(async (url: string) =>
+      String(url).startsWith('/api/routes')
+        ? jsonResponse({ routes: [] })
+        : { ok: true, status: 200, body: { getReader: () => sseReader([
+            'data: {"t":"delta","d":"回答甲"}\n\n',
+            'data: {"t":"done"}\n\n',
+          ]) } }))
+
+    stub()
+    const { unmount } = render(<AgentPage />)
+    fireEvent.change(screen.getByPlaceholderText(/向 Agent 提问/), { target: { value: '问题甲' } })
+    fireEvent.click(screen.getByText('发送'))
+    expect(await screen.findByText('回答甲')).toBeTruthy()
+    await waitFor(() => expect(listHistories().length).toBe(1))
+    const sid1 = sessionStorage.getItem(SESSION_KEY)
+
+    // 新会话：发第二个问题，产生第二条存档
+    fireEvent.click(screen.getByText('新会话'))
+    fireEvent.change(screen.getByPlaceholderText(/向 Agent 提问/), { target: { value: '问题乙' } })
+    fireEvent.click(screen.getByText('发送'))
+    expect(await screen.findByText('回答甲')).toBeTruthy() // stub 的回答相同，只看流程
+    await waitFor(() => expect(listHistories().length).toBe(2))
+    const sid2 = sessionStorage.getItem(SESSION_KEY)
+    expect(sid2).not.toBe(sid1)
+
+    // 切回第一条：消息与会话 id 都还原
+    const historySelect = screen.getByLabelText('历史会话') as HTMLSelectElement
+    fireEvent.change(historySelect, { target: { value: sid1 as string } })
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe(sid1)
+    expect(Array.from(document.querySelectorAll('.chat-msg.user')).some((el) => (el.textContent || '').includes('问题甲'))).toBe(true)
+    unmount()
+  })
+
+  it('重新挂载（模拟刷新）从存档恢复当前会话的对话', async () => {
+    // 先造一条存档并把它的 id 设为当前会话
+    const sid = 'sess-restore-1'
+    saveHistory(sid, [
+      { role: 'user', text: '刷新前的问题' },
+      { role: 'agent', text: '刷新前的回答' },
+    ])
+    saveSessionId(sid)
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => String(url).startsWith('/api/routes')
+      ? jsonResponse({ routes: [] })
+      : jsonResponse({ ok: true })))
+
+    const { container } = render(<AgentPage />)
+    // 等 useLoad 的路由请求 resolve，避免异步 state 更新落在断言之后（act 警告）
+    await act(async () => {})
+    const log = container.querySelector('.chat-log') as HTMLElement
+    expect(log.textContent).toContain('刷新前的问题')
+    expect(log.textContent).toContain('刷新前的回答')
+    expect(screen.getByText(/会话 sess-restore-1/)).toBeTruthy()
   })
 })

@@ -83,6 +83,84 @@ export function newSessionId(): string {
   }
 }
 
+// ---- 会话历史存档（localStorage：刷新/关标签页后仍可找回）----
+// 当前会话 id 仍存 sessionStorage（见上）：同标签页刷新复用、关标签页失效；
+// 历史存档存 localStorage，用于「会话列表」切换。两者互补：前者管「当前是哪条」，
+// 后者管「都有哪些、各自的对话记录」。localStorage 不可用（隐私模式）时全部静默降级。
+
+export interface ChatMsg {
+  role: 'user' | 'agent'
+  text: string
+}
+
+export interface SessionRecord {
+  id: string
+  title: string
+  messages: ChatMsg[]
+  updated: number
+}
+
+export const HISTORY_KEY = 'tsmhub_lume_histories'
+const HISTORY_LIMIT = 20 // 最多保留 20 条，避免 localStorage 无限增长
+
+function isMsgArray(v: any): v is ChatMsg[] {
+  return Array.isArray(v) && v.every((m) => m
+    && (m.role === 'user' || m.role === 'agent')
+    && typeof m.text === 'string')
+}
+
+/** 读取全部会话存档，按最近更新排序；脏数据整条跳过。 */
+export function listHistories(): SessionRecord[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY) || ''
+    if (!raw) return []
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return []
+    return arr.filter((r: any) => r && typeof r.id === 'string'
+      && /^sess-[A-Za-z0-9\-_+]+$/.test(r.id)
+      && typeof r.title === 'string' && isMsgArray(r.messages)
+      && typeof r.updated === 'number')
+      .map((r: any) => ({ id: r.id, title: r.title, messages: r.messages, updated: r.updated }))
+      .sort((a: SessionRecord, b: SessionRecord) => b.updated - a.updated)
+  } catch {
+    return []
+  }
+}
+
+/** 保存/覆盖一条会话存档（按 id 去重），超出上限丢弃最旧的。 */
+export function saveHistory(id: string, messages: ChatMsg[], title?: string): void {
+  if (!/^sess-[A-Za-z0-9\-_+]+$/.test(id) || messages.length === 0) return
+  try {
+    const all = listHistories().filter((r) => r.id !== id)
+    const firstUser = messages.find((m) => m.role === 'user')
+    const derived = (firstUser?.text || '新会话').replace(/\s+/g, ' ').slice(0, 40)
+    all.unshift({
+      id,
+      title: title ?? derived,
+      messages: messages.map((m) => ({ role: m.role, text: m.text })),
+      updated: Date.now(),
+    })
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(all.slice(0, HISTORY_LIMIT)))
+  } catch {
+    /* localStorage 不可用：忽略 */
+  }
+}
+
+/** 删除一条会话存档。 */
+export function deleteHistory(id: string): void {
+  try {
+    const all = listHistories().filter((r) => r.id !== id)
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(all))
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 读取某条存档（不存在返回 null）。 */
+export function loadHistory(id: string): SessionRecord | null {
+  return listHistories().find((r) => r.id === id) || null
+}
+
 export interface AgentChatOptions {
   /** 首字节超时：建立连接后多久没收到第一个 SSE 数据块就自动停止（默认 15s）。 */
   firstByteMs?: number

@@ -2,16 +2,15 @@
 // 与 Playground 的区别：这是 ReAct Agent（会话记忆 + 工具调用），Playground 是
 // 无状态单轮 chat/completions。流式协议解析在 ../agent.ts（纯函数，可单测）。
 import { useEffect, useRef, useState } from 'react'
-import { agentChat, loadSessionId, newSessionId, saveSessionId, type AgentEvent } from '../agent'
+import {
+  agentChat, loadSessionId, newSessionId, saveSessionId,
+  listHistories, loadHistory, saveHistory, deleteHistory,
+  type ChatMsg, type AgentEvent,
+} from '../agent'
 import API from '../api'
 import { useLoad } from '../hooks'
 import { Panel } from '../components'
 import { MarkdownText } from '../markdown'
-
-interface ChatMsg {
-  role: 'user' | 'agent'
-  text: string
-}
 
 // 示例问题：只挑 agent 现有只读工具能回答的，避免误导用户以为它能执行写操作。
 // 首屏引导问题 + 回答完成后的追问问题（两组交替，避免每次都是同一批）。
@@ -31,12 +30,21 @@ const FOLLOWUP_SUGGESTIONS = [
 ]
 
 export function AgentPage() {
-  const [messages, setMessages] = useState<ChatMsg[]>([])
+  // 初次挂载：沿用 sessionStorage 里的当前会话 id，并从 localStorage 存档恢复
+  // 该会话的对话记录（关标签页后重新打开也能找回）。只算一次初始 id：
+  // loadSessionId 在无存档时会生成并写入新 id，重复调用会拿到不同的值。
+  const initialIdRef = useRef<string | null>(null)
+  if (initialIdRef.current === null) initialIdRef.current = loadSessionId()
+  const [sessionId, setSessionId] = useState(initialIdRef.current)
+  const [messages, setMessages] = useState<ChatMsg[]>(() => {
+    const saved = loadHistory(initialIdRef.current as string)
+    return saved ? saved.messages : []
+  })
+  const [histories, setHistories] = useState(() => listHistories())
   const [note, setNote] = useState('')
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
-  const [sessionId, setSessionId] = useState(loadSessionId)
   const [model, setModel] = useState('') // 空 = auto（服务端 LLM_MODEL，由 tsm-hub 路由表选）
   const [showFollowup, setShowFollowup] = useState(false) // 回答完成后显示下一组追问示例
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null) // 最近一次复制成功的消息下标（短暂反馈）
@@ -60,6 +68,17 @@ export function AgentPage() {
     bottomRef.current?.scrollIntoView?.({ block: 'end' })
   }, [messages, note, showFollowup, busy])
 
+  // 一轮对话结束后（busy true→false）把当前会话存档，并刷新会话列表。
+  // 不在每条 delta 写 localStorage：流式期间频繁写既浪费也会让列表跳动。
+  const wasBusy = useRef(false)
+  useEffect(() => {
+    if (wasBusy.current && !busy) {
+      saveHistory(sessionId, messages)
+      setHistories(listHistories())
+    }
+    wasBusy.current = busy
+  }, [busy, messages, sessionId])
+
   const stop = () => {
     abortRef.current?.abort()
     abortRef.current = null
@@ -76,6 +95,29 @@ export function AgentPage() {
     setSessionId(fresh)
     setShowFollowup(false)
     setCopiedIdx(null)
+  }
+
+  // 切换到历史会话：停止当前流，载入该会话的 id 与对话记录。
+  const switchTo = (id: string) => {
+    if (busy || id === sessionId) return
+    stop()
+    const rec = loadHistory(id)
+    if (!rec) return
+    saveSessionId(id)
+    setSessionId(id)
+    setMessages(rec.messages)
+    setNote('')
+    setErr('')
+    setInput('')
+    setShowFollowup(false)
+    setCopiedIdx(null)
+  }
+
+  // 删除一条历史存档；若删的是当前会话，同时开一个空白新会话。
+  const removeHistory = (id: string) => {
+    deleteHistory(id)
+    if (id === sessionId) reset()
+    setHistories(listHistories())
   }
 
   // 复制回答的 Markdown 原文（不是渲染后的 DOM 文本），便于粘贴到别处保留格式。
@@ -103,7 +145,7 @@ export function AgentPage() {
     }
   }
 
-  const send = async (override?: string, retryIndex?: number) => {
+  const send = async (override?: string, retryIndex?: number, freshContext = false) => {
     const text = (override ?? input).trim()
     if (!text || busy) return
     setInput('')
@@ -112,9 +154,17 @@ export function AgentPage() {
     setShowFollowup(false)
     setCopiedIdx(null)
     gotDeltaRef.current = false
+    // 本次请求用的会话 id：换上下文重试时必须是局部新值——setSessionId 是异步的，
+    // 直接读 state 会拿到旧 id，请求仍带旧记忆，换上下文就失效了。
+    const sid = freshContext ? newSessionId() : sessionId
+    if (freshContext) {
+      saveSessionId(sid)
+      setSessionId(sid)
+    }
     if (typeof retryIndex === 'number') {
       // 重试 = 从该轮分叉：保留对应提问，丢弃旧回答及其后所有消息，再重新生成。
-      // 会话 ID 不变，服务端 ReAct 记忆仍含前序轮次，上下文不丢。
+      // 默认沿用会话（服务端保留前序记忆）；freshContext 时前端历史仍显示，
+      // 但服务端从空白上下文重新回答——旧回答不会带偏，代价是前序轮次不再进记忆。
       setMessages((m) => {
         const old = m[retryIndex]
         const question = m[retryIndex - 1]
@@ -144,7 +194,7 @@ export function AgentPage() {
       // done：由流结束统一收尾。
     }
     try {
-      await agentChat(text, sessionId, ctrl.signal, onEvent, model)
+      await agentChat(text, sid, ctrl.signal, onEvent, model)
     } catch (e: any) {
       if (e?.name !== 'AbortError') setErr(String(e?.message || e))
     } finally {
@@ -162,12 +212,13 @@ export function AgentPage() {
     }
   }
 
-  // 点某条回答的「重试」：找到它前面那条用户提问，以同一会话重发。
-  const retry = (index: number) => {
+  // 点某条回答的「重试」：找到它前面那条用户提问重发。
+  // fresh=true 时换新 sessionId，服务端不带旧记忆重新生成（前序对话仍显示）。
+  const retry = (index: number, fresh = false) => {
     if (busy) return
     const question = messages[index - 1]
     if (!question || question.role !== 'user') return
-    void send(question.text, index)
+    void send(question.text, index, fresh)
   }
 
   return (
@@ -191,7 +242,32 @@ export function AgentPage() {
           <option value="">auto（tsm-hub 默认路由）</option>
           {models.map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
-        <span className="tiny mono wrap">选项来自 tsm-hub 路由表 · 会话 {sessionId}</span>
+        <label htmlFor="agent-history">会话</label>
+        <select
+          id="agent-history"
+          aria-label="历史会话"
+          value={sessionId}
+          disabled={busy}
+          onChange={(e) => switchTo(e.target.value)}
+        >
+          {!histories.some((h) => h.id === sessionId) && (
+            <option value={sessionId}>当前对话（未存档）</option>
+          )}
+          {histories.map((h) => (
+            <option key={h.id} value={h.id}>{h.title || h.id}</option>
+          ))}
+        </select>
+        {histories.some((h) => h.id === sessionId) && (
+          <button
+            type="button"
+            className="chat-act"
+            title="删除这条会话存档（同时开一个空白新会话）"
+            aria-label="删除当前会话存档"
+            disabled={busy}
+            onClick={() => removeHistory(sessionId)}
+          >删除</button>
+        )}
+        <span className="tiny mono wrap">模型来自 tsm-hub 路由 · 会话 {sessionId}</span>
       </div>
       <div className="chat-log">
         {messages.length === 0 && (
@@ -222,11 +298,19 @@ export function AgentPage() {
                   <button
                     type="button"
                     className="chat-act"
-                    title="基于当前会话重新生成这条回答（会丢弃该轮及之后的回答）"
+                    title="沿用当前会话重新生成（保留前序记忆，丢弃该轮及之后的回答）"
                     aria-label={`重试第 ${i + 1} 条回答`}
                     disabled={busy}
                     onClick={() => retry(i)}
                   >重试</button>
+                  <button
+                    type="button"
+                    className="chat-act"
+                    title="换新会话重新生成：服务端不带旧记忆，旧回答不会带偏；代价是前序轮次不再进入服务端记忆"
+                    aria-label={`换上下文重试第 ${i + 1} 条回答`}
+                    disabled={busy}
+                    onClick={() => retry(i, true)}
+                  >换上下文</button>
                 </div>
               )}
             </div>
