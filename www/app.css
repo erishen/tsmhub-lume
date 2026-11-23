@@ -213,6 +213,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .chat-role { font-size: 10px; opacity: .7; margin-bottom: 2px; }
 .chat-actions { display: flex; gap: 4px; opacity: 0; transition: opacity .15s; }
 .chat-msg.agent:hover .chat-actions, .chat-actions:focus-within { opacity: 1; }
+@media (hover: none) { .chat-actions { opacity: 1; } }
 .chat-act {
   border: 1px solid transparent; background: none; cursor: pointer;
   color: var(--muted); font-size: 10px; line-height: 1.4;
