@@ -39,6 +39,12 @@ RUN echo "${LUME_SHA256}  /tmp/lume.tgz" | sha256sum -c - \
 FROM ${RUNTIME_IMAGE} AS runtime
 COPY --from=lume-bin /usr/local/bin/lume /usr/local/bin/lume
 
+# agent-httpd 的 LLM 上游调用 fork curl(1)，运行时镜像必须带它；
+# apk 官方 CDN 在国内常被 TLS 重置，失败自动切清华镜像。
+RUN (apk add --no-cache curl \
+   || (sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.tuna.tsinghua.edu.cn#g' /etc/apk/repositories \
+   && apk add --no-cache curl))
+
 RUN addgroup -S -g 10001 lume \
  && adduser -S -D -H -u 10001 -G lume lume \
  && mkdir -p /app/www /app/.data

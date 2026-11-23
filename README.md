@@ -244,18 +244,22 @@ LLM 应用/客户端  --X-Api-Key / Authorization: Bearer: sk-tr-…-->  Lume /v
 二进制）：`POST /react/api/chat`，同源 SSE（note / delta / error / done 信封）。
 该端点由框架层在路由分发前拦截，Lume 脚本层无需（也无法）注册它。
 
-- **模型上游**：`LLM_API_URL`（OpenAI 兼容）+ `LLM_API_KEY` + `LLM_MODEL` +
-  `LLM_TIMEOUT`。Docker 里默认 `http://tsm-hub:9070/v1`，Key 复用 `TSM_CLIENT_KEY`
-  （compose 里映射为 `LLM_API_KEY`）；本地 `make dev` 时写进项目根 `.env`
-  （lume 从运行目录读取）。**`LLM_API_KEY` 留空 = 内置离线演示引擎**，可离线
-  开发/测试，不花钱。
+- **模型上游**：`LLM_API_URL`（OpenAI 兼容，**必须写完整的 `/v1/chat/completions`
+  端点**——agent C 层直接 POST 这个 URL，不追加路径）+ `LLM_API_KEY` + `LLM_MODEL`
+  + `LLM_TIMEOUT`。Docker 里默认 `http://tsm-hub:9070/v1/chat/completions`，
+  Key 复用 `TSM_CLIENT_KEY`（compose 里映射为 `LLM_API_KEY`）；本地 `make dev`
+  时写进项目根 `.env`（lume 从运行目录读取）。**`LLM_API_KEY` 留空 = 内置离线
+  演示引擎**，可离线开发/测试，不花钱。容器运行时需要 `curl`（agent fork 它打上游），
+  镜像里已装。
 - **控制台只读工具**：`tsmhub_lume.lume` 注册了 5 个只读 tool（overview / usage /
   routes / keys / provider_health），agent 的 ReAct 循环可直接调用，回答「多少
   key、今天花了多少」这类控制台问题；**不拥有任何写权限**——写操作仍走
   `/api/*` 的 `?role=` 闸门路由。
-- **router 目录同步**：`LLM_API_URL` 指向 tsm-hub 时，启动会把上游 `GET /v1/tools`
-  目录同步为代理工具（调用时转发 `POST /v1/tools/invoke`），skills/MCP 一并挂载；
-  与本地内建/脚本工具同名时本地实现优先。
+- **router 目录同步**：`ROUTER_API_URL`（默认复用 `LLM_API_URL`）指向 tsm-hub 的
+  **base**（compose 里显式设为 `http://tsm-hub:9070/v1`，会拼 `/v1/tools` 等后缀），
+  启动时把上游 `GET /v1/tools` 目录同步为代理工具（调用时转发
+  `POST /v1/tools/invoke`），skills/MCP 一并挂载；与本地内建/脚本工具同名时
+  本地实现优先。注意它**不能**和 `LLM_API_URL`（完整 chat 端点）写成同一个值。
 - **会话记忆**：前端按 `sess-<hex>` 生成 sessionId，同一 id 服务端重放历史上下文；
   「新会话」按钮换 id 即清空。
 - **安全边界**：端点有同源 + POST-only 校验（`chat_origin_ok`），跨域 POST 403；
@@ -264,8 +268,9 @@ LLM 应用/客户端  --X-Api-Key / Authorization: Bearer: sk-tr-…-->  Lume /v
 
 | 变量 | 默认（compose） | 说明 |
 | --- | --- | --- |
-| `LLM_API_URL` | `http://tsm-hub:9070/v1` | agent 的 OpenAI 兼容上游 |
+| `LLM_API_URL` | `http://tsm-hub:9070/v1/chat/completions` | agent 的 OpenAI 兼容上游（完整 chat 端点） |
 | `LLM_API_KEY` | 复用 `TSM_CLIENT_KEY` | 留空 = 离线演示引擎 |
+| `ROUTER_API_URL` | `http://tsm-hub:9070/v1` | router 目录同步的 base（拼 `/v1/tools` 等） |
 | `LLM_MODEL` | `auto` | 模型名（走 tsm-hub 路由表） |
 | `LLM_TIMEOUT` | `120` | 单次生成超时秒数 |
 
