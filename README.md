@@ -187,7 +187,7 @@ LLM 应用/客户端  --X-Api-Key / Authorization: Bearer: sk-tr-…-->  Lume /v
 
 | 项 | 说明 |
 | --- | --- |
-| 鉴权 | 在上游做。Lume 只透传客户端 Key（`X-Api-Key` / `?api_key=` / `Authorization: Bearer` 三选一），无 Key → 上游 401 `missing_key` |
+| 鉴权 | 在上游做。Lume 只透传客户端 Key（`X-Api-Key` / `?api_key=` / `Authorization: Bearer` 三选一）；客户端未带 Key 时**回退服务端 `TSM_CLIENT_KEY`**（见下行），两者都没有才由上游返回 401 `missing_key` |
 | 端点 | 整个 `/v1/*` 空间透传：`chat/completions`、`models`、`tools`、`tools/invoke`、`skills`、`mcps` |
 | 与管理面隔离 | `/v1/*` 不走 `?role=` 闸门——这是客户端 API；管理面 `/api/*` 才走闸门 |
 | Key 来源 | 客户端 `X-Api-Key` / `Authorization: Bearer` 头 → 未带则 `?api_key=` → 未带则回退服务端 `TSM_CLIENT_KEY` |
@@ -196,6 +196,12 @@ LLM 应用/客户端  --X-Api-Key / Authorization: Bearer: sk-tr-…-->  Lume /v
 > ✅ **三种方式都接受**：`X-Api-Key`、`?api_key=`、**`Authorization: Bearer`**（Lume 把
 > 完整 `Authorization` 暴露在 `req.authorization`，见 `lang/bridge.c`；OpenAI 兼容客户端
 > 与 lume agent 用标准 Bearer 头即可）。三种都归一为上游认的 `Authorization: Bearer`。
+
+> ⚠️ **Basic Auth 是全站生效的**：`HTPASSWD_FILE` 一旦配置，Lume 在 C 层对所有路径
+> （含 `/v1/*`）先做 Basic Auth，之后才轮到上层的 Key 透传。所以对外启用鉴权后，
+> OpenAI 兼容客户端除了带自己的 `sk-tr-` Key，还必须在同一请求上带 Basic Auth 凭据
+> （或用反向代理把 `/v1/*` 单独暴露到不启用 htpasswd 的入口）。本机 `127.0.0.1`
+> 监听且不开 Basic Auth 时不存在此问题。
 
 > ✅ **流式（lume ≥ v0.14.1）**：`/v1/*` 用 `proxy_stream` 信封——Lume 连上游、
 > **读一块写一块**（真流式，不缓冲整响应）。`stream:true` 的 SSE 逐块到达
