@@ -12,6 +12,15 @@ interface ChatMsg {
   text: string
 }
 
+// 示例问题：只挑 agent 现有只读工具能回答的，避免误导用户以为它能执行写操作。
+const SUGGESTIONS = [
+  '现在有多少个 key？',
+  '今天的用量和成本是多少？',
+  '哪些 provider 不健康？',
+  '当前有哪些路由？',
+  '给我看一下整体概览',
+]
+
 export function AgentPage() {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [note, setNote] = useState('')
@@ -50,8 +59,8 @@ export function AgentPage() {
     setSessionId(newSessionId())
   }
 
-  const send = async () => {
-    const text = input.trim()
+  const send = async (override?: string) => {
+    const text = (override ?? input).trim()
     if (!text || busy) return
     setInput('')
     setErr('')
@@ -116,7 +125,25 @@ export function AgentPage() {
         <span className="tiny mono wrap">选项来自 tsm-hub 路由表 · 会话 {sessionId}</span>
       </div>
       <div className="chat-log">
-        {messages.length === 0 && <div className="empty">开始与 Agent 对话…</div>}
+        {messages.length === 0 && (
+          <div className="chat-empty">
+            <div className="empty">开始与 Agent 对话…</div>
+            <div className="chat-suggests">
+              <span className="tiny">试试问：</span>
+              {SUGGESTIONS.map((q) => (
+                <button
+                  key={q}
+                  className="btn sm"
+                  disabled={busy}
+                  aria-label={`示例问题：${q}`}
+                  onClick={() => void send(q)}
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {messages.map((m, i) => (
           <div key={i} className={m.role === 'user' ? 'chat-msg user' : 'chat-msg agent'}>
             <div className="chat-role">{m.role === 'user' ? '你' : 'Agent'}</div>

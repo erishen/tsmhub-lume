@@ -223,5 +223,13 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 }
 .chat-toolbar select { min-width: 220px; max-width: 100%; }
 .chat-toolbar .tiny { opacity: .75; }
+.chat-empty .empty { padding: 20px 12px 12px; }
+.chat-suggests {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  align-items: center; justify-content: center;
+  padding: 0 12px 14px;
+}
+.chat-suggests .tiny { color: var(--muted); }
+.chat-suggests .btn { cursor: pointer; }
 .chat-input { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 8px; }
 .chat-input textarea { flex: 1; resize: vertical; }

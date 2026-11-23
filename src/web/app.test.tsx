@@ -616,6 +616,23 @@ describe('AgentPage', () => {
     expect(screen.getByText('发送')).toBeTruthy()
   })
 
+  it('点击示例问题直接发送，发送后示例区消失', async () => {
+    const bodies: any[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: any) => {
+      if (String(url).startsWith('/api/routes')) return jsonResponse({ routes: [] })
+      bodies.push(JSON.parse(init.body))
+      return { ok: true, status: 200, body: { getReader: () => sseReader([
+        'data: {"t":"delta","d":"有 15 个 key"}\n\n',
+        'data: {"t":"done"}\n\n',
+      ]) } }
+    }))
+    render(<AgentPage />)
+    fireEvent.click(screen.getByRole('button', { name: '示例问题：现在有多少个 key？' }))
+    expect(await screen.findByText('有 15 个 key')).toBeTruthy()
+    expect(bodies[0].message).toBe('现在有多少个 key？')
+    expect(screen.queryByText('试试问：')).toBeNull()
+  })
+
   it('模型下拉来自 tsm-hub 路由表，选中后请求体携带 model', async () => {
     const bodies: any[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: any) => {
