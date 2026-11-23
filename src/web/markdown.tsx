@@ -9,11 +9,15 @@ const INLINE = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\((?:[^()]|\([^()]*\))*\)|\*[^*
 function safeHref(raw: string): string | null {
   const s = raw.trim()
   if (/^(https?:|mailto:)/i.test(s)) return s
-  if (s.startsWith('#') || s.startsWith('/')) return s
+  // 站内相对路径放行；协议相对 URL（//host、/\host）会被浏览器解析成外链，
+  // 不让 LLM 输出借它绕过白名单跳到任意主机。
+  if (s.startsWith('#') || /^\/(?![\/\\])/.test(s)) return s
   return null
 }
 
-function inline(text: string): ReactNode[] {
+// keyPrefix：同一父节点里可能拼多行的 inline 结果（段落用 <br> 连接），
+// 每行的 token index 都从 0 开始，不前缀会撞 key。
+function inline(text: string, keyPrefix = ''): ReactNode[] {
   const out: ReactNode[] = []
   let last = 0
   let m: RegExpExecArray | null
@@ -21,22 +25,23 @@ function inline(text: string): ReactNode[] {
   while ((m = INLINE.exec(text)) !== null) {
     if (m.index > last) out.push(text.slice(last, m.index))
     const tok = m[0]
+    const k = `${keyPrefix}${m.index}`
     if (tok.startsWith('**') && tok.endsWith('**')) {
-      out.push(<strong key={m.index}>{tok.slice(2, -2)}</strong>)
+      out.push(<strong key={k}>{tok.slice(2, -2)}</strong>)
     } else if (tok.startsWith('`') && tok.endsWith('`')) {
-      out.push(<code key={m.index}>{tok.slice(1, -1)}</code>)
+      out.push(<code key={k}>{tok.slice(1, -1)}</code>)
     } else if (tok.startsWith('[')) {
       const link = /^\[([^\]]+)\]\(((?:[^()]|\([^()]*\))*)\)$/.exec(tok)
       if (link) {
         const href = safeHref(link[2])
         out.push(href
-          ? <a key={m.index} href={href} target="_blank" rel="noreferrer">{link[1]}</a>
-          : <Fragment key={m.index}>{link[1]}</Fragment>)
+          ? <a key={k} href={href} target="_blank" rel="noreferrer">{link[1]}</a>
+          : <Fragment key={k}>{link[1]}</Fragment>)
       } else {
         out.push(tok)
       }
     } else if (tok.startsWith('*') && tok.endsWith('*')) {
-      out.push(<em key={m.index}>{tok.slice(1, -1)}</em>)
+      out.push(<em key={k}>{tok.slice(1, -1)}</em>)
     } else {
       out.push(tok)
     }
@@ -105,12 +110,13 @@ function renderNodes(nodes: ListNode[], prefix: string): ReactNode[] {
   const out: ReactNode[] = []
   let group: ListNode[] = []
   let kind: 'ol' | 'ul' | null = null
+  let seq = 0 // 同一节点下 ol/ul 交替会多次 flush，key 必须每次不同
   const flush = () => {
     if (!group.length || !kind) return
     const items = group
     const Tag = kind
     out.push(
-      <Tag key={`${prefix}-l`}>
+      <Tag key={`${prefix}-l${seq++}`}>
         {items.map((n, idx) => (
           <li key={idx}>
             {inline(n.text)}
@@ -205,7 +211,9 @@ export function MarkdownText({ text }: { text: string }): ReactNode {
       && !(lines[i].trim().startsWith('|') && i + 1 < lines.length && /^\|?[\s:|-]+\|/.test(lines[i + 1]))) {
       para.push(lines[i++])
     }
-    out.push(<p key={key++}>{para.flatMap((s, n) => (n ? [<br key={`b${n}`} />, ...inline(s)] : inline(s)))}</p>)
+    out.push(<p key={key++}>{para.flatMap((s, n) => (n
+      ? [<br key={`b${n}`} />, ...inline(s, `l${n}-`)]
+      : inline(s, 'l0-')))}</p>)
   }
   return <>{out}</>
 }

@@ -42,8 +42,31 @@ export function App() {
   }, [])
   useEffect(() => {
     loadTop()
-    const t = window.setInterval(loadTop, 30000)
-    return () => window.clearInterval(t)
+    let timer: number | undefined
+    const stopPolling = () => {
+      if (timer !== undefined) {
+        window.clearInterval(timer)
+        timer = undefined
+      }
+    }
+    const startPolling = () => {
+      stopPolling()
+      timer = window.setInterval(loadTop, 30000)
+    }
+    // 后台标签页不发无谓的 meta/health 请求；切回前台立即补一次再恢复定时。
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') stopPolling()
+      else {
+        loadTop()
+        startPolling()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    startPolling()
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      stopPolling()
+    }
   }, [loadTop])
 
   const navigate = (k: RouteKey) => {
