@@ -39,10 +39,12 @@ export function AgentPage() {
   const [sessionId, setSessionId] = useState(() => newSessionId())
   const [model, setModel] = useState('') // 空 = auto（服务端 LLM_MODEL，由 tsm-hub 路由表选）
   const [showFollowup, setShowFollowup] = useState(false) // 回答完成后显示下一组追问示例
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null) // 最近一次复制成功的消息下标（短暂反馈）
   const { data: routesData } = useLoad<any>(() => API.listRoutes())
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
   const gotDeltaRef = useRef(false) // 本轮是否收到过 delta（区分成功回复与失败/空回复）
+  const copyTimerRef = useRef<number | null>(null)
 
   // 模型选项直接取 tsm-hub 路由表的对外模型名（空 model 的默认路由不列出）。
   // 路由表变了，刷新页面即可看到新选项；这里不做本地硬编码。
@@ -71,17 +73,55 @@ export function AgentPage() {
     setErr('')
     setSessionId(newSessionId())
     setShowFollowup(false)
+    setCopiedIdx(null)
   }
 
-  const send = async (override?: string) => {
+  // 复制回答的 Markdown 原文（不是渲染后的 DOM 文本），便于粘贴到别处保留格式。
+  // 非安全上下文（http / 老浏览器）没有 clipboard API 时降级到 execCommand。
+  const copy = async (text: string, index: number) => {
+    if (!text) return
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+      }
+      setCopiedIdx(index)
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current)
+      copyTimerRef.current = window.setTimeout(() => setCopiedIdx(null), 2000)
+    } catch {
+      setErr('复制失败，请手动选择文本')
+    }
+  }
+
+  const send = async (override?: string, retryIndex?: number) => {
     const text = (override ?? input).trim()
     if (!text || busy) return
     setInput('')
     setErr('')
     setNote('')
     setShowFollowup(false)
+    setCopiedIdx(null)
     gotDeltaRef.current = false
-    setMessages((m) => [...m, { role: 'user', text }, { role: 'agent', text: '' }])
+    if (typeof retryIndex === 'number') {
+      // 重试 = 从该轮分叉：保留对应提问，丢弃旧回答及其后所有消息，再重新生成。
+      // 会话 ID 不变，服务端 ReAct 记忆仍含前序轮次，上下文不丢。
+      setMessages((m) => {
+        const old = m[retryIndex]
+        const question = m[retryIndex - 1]
+        if (!old || old.role !== 'agent' || !question || question.role !== 'user') return m
+        return [...m.slice(0, retryIndex), { role: 'agent', text: '' }]
+      })
+    } else {
+      setMessages((m) => [...m, { role: 'user', text }, { role: 'agent', text: '' }])
+    }
     setBusy(true)
     const ctrl = new AbortController()
     abortRef.current = ctrl
@@ -118,6 +158,14 @@ export function AgentPage() {
       // 有实际回复才出下一组示例；停止/失败不出。
       if (gotDeltaRef.current && !ctrl.signal.aborted) setShowFollowup(true)
     }
+  }
+
+  // 点某条回答的「重试」：找到它前面那条用户提问，以同一会话重发。
+  const retry = (index: number) => {
+    if (busy) return
+    const question = messages[index - 1]
+    if (!question || question.role !== 'user') return
+    void send(question.text, index)
   }
 
   return (
@@ -157,7 +205,29 @@ export function AgentPage() {
         )}
         {messages.map((m, i) => (
           <div key={i} className={m.role === 'user' ? 'chat-msg user' : 'chat-msg agent'}>
-            <div className="chat-role">{m.role === 'user' ? '你' : 'Agent'}</div>
+            <div className="chat-head">
+              <div className="chat-role">{m.role === 'user' ? '你' : 'Agent'}</div>
+              {m.role === 'agent' && m.text && (
+                <div className="chat-actions">
+                  <button
+                    type="button"
+                    className="chat-act"
+                    title="复制回答的 Markdown 原文"
+                    aria-label={`复制第 ${i + 1} 条回答`}
+                    disabled={busy && i === messages.length - 1}
+                    onClick={() => void copy(m.text, i)}
+                  >{copiedIdx === i ? '已复制' : '复制'}</button>
+                  <button
+                    type="button"
+                    className="chat-act"
+                    title="基于当前会话重新生成这条回答（会丢弃该轮及之后的回答）"
+                    aria-label={`重试第 ${i + 1} 条回答`}
+                    disabled={busy}
+                    onClick={() => retry(i)}
+                  >重试</button>
+                </div>
+              )}
+            </div>
             <div className="chat-text">
               {m.role === 'agent'
                 ? (m.text ? <MarkdownText text={m.text} /> : (i === messages.length - 1 && busy ? '…' : ''))

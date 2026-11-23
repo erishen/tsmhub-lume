@@ -1,6 +1,6 @@
 // src/web/app.test.tsx —— 核心纯函数与关键组件的单元测试
 import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest'
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import React from 'react'
 import { jsonResponse, baseOf, installFetch } from './test-utils'
 import {
@@ -761,6 +761,87 @@ describe('AgentPage', () => {
     fireEvent.click(screen.getByText('新会话'))
     expect(screen.getByText(/开始与 Agent 对话/)).toBeTruthy()
     expect(screen.getByText(/会话 sess-/).textContent).not.toBe(firstSid)
+  })
+
+  it('回答可复制 Markdown 原文，复制后短暂显示“已复制”', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => String(url).startsWith('/api/routes')
+        ? jsonResponse({ routes: [] })
+        : { ok: true, status: 200, body: { getReader: () => sseReader([
+            'data: {"t":"delta","d":"**粗体**\\n\\n- 甲\\n- 乙"}\n\n',
+            'data: {"t":"done"}\n\n',
+          ]) } }))
+      render(<AgentPage />)
+      fireEvent.change(screen.getByPlaceholderText(/向 Agent 提问/), { target: { value: 'q' } })
+      fireEvent.click(screen.getByText('发送'))
+      expect(await screen.findByText('粗体')).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: '复制第 2 条回答' }))
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith('**粗体**\n\n- 甲\n- 乙'))
+      expect(screen.getByText('已复制')).toBeTruthy()
+      // 复制的是原文，不是渲染后的 DOM：strong 标签仍在，未被替换。
+      expect(screen.getByText('粗体').tagName).toBe('STRONG')
+    } finally {
+      delete (navigator as any).clipboard
+    }
+  })
+
+  it('重试：重发该轮提问、替换回答，不新增消息且不换会话；重试中间轮次会丢弃后续对话', async () => {
+    const bodies: any[] = []
+    let round = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: any) => {
+      if (String(url).startsWith('/api/routes')) return jsonResponse({ routes: [] })
+      bodies.push(JSON.parse(init.body))
+      round++
+      return { ok: true, status: 200, body: { getReader: () => sseReader([
+        `data: {"t":"delta","d":"回答${round}"}\n\n`,
+        'data: {"t":"done"}\n\n',
+      ]) } }
+    }))
+    const { container } = render(<AgentPage />)
+    const input = screen.getByPlaceholderText(/向 Agent 提问/)
+    fireEvent.change(input, { target: { value: 'q1' } })
+    fireEvent.click(screen.getByText('发送'))
+    expect(await screen.findByText('回答1')).toBeTruthy()
+    fireEvent.change(input, { target: { value: 'q2' } })
+    fireEvent.click(screen.getByText('发送'))
+    expect(await screen.findByText('回答2')).toBeTruthy()
+    expect(container.querySelectorAll('.chat-msg').length).toBe(4)
+
+    // 重试第一条回答（下标 1）：q2 及其回答被丢弃，只保留 q1 + 新回答。
+    fireEvent.click(screen.getByRole('button', { name: '重试第 2 条回答' }))
+    expect(await screen.findByText('回答3')).toBeTruthy()
+    expect(screen.queryByText('回答1')).toBeNull()
+    expect(screen.queryByText('回答2')).toBeNull()
+    expect(screen.queryByText('q2')).toBeNull()
+    expect(container.querySelectorAll('.chat-msg').length).toBe(2)
+    expect(bodies[2]).toEqual({ message: 'q1', sessionId: bodies[0].sessionId })
+  })
+
+  it('流式输出期间复制/重试按钮禁用，避免复制到半截回答', async () => {
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((res) => { release = res })
+    let readCount = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => String(url).startsWith('/api/routes')
+      ? jsonResponse({ routes: [] })
+      : { ok: true, status: 200, body: { getReader: () => ({
+          read: async () => {
+            if (readCount++ === 0) {
+              return { done: false, value: new TextEncoder().encode('data: {"t":"delta","d":"hi"}\n\n') }
+            }
+            await gate // 第一次 delta 后挂起，模拟长回答尚未结束
+            return { done: true, value: undefined }
+          },
+        }) } }))
+    render(<AgentPage />)
+    fireEvent.change(screen.getByPlaceholderText(/向 Agent 提问/), { target: { value: 'q' } })
+    fireEvent.click(screen.getByText('发送'))
+    expect(await screen.findByText('hi')).toBeTruthy()
+    expect((screen.getByRole('button', { name: '复制第 2 条回答' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: '重试第 2 条回答' }) as HTMLButtonElement).disabled).toBe(true)
+    release?.()
+    await waitFor(() => expect(screen.getByText('发送')).toBeTruthy())
   })
 })
 

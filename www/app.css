@@ -209,7 +209,17 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   background: var(--panel-2); border: 1px solid var(--border);
   border-bottom-left-radius: 3px;
 }
+.chat-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .chat-role { font-size: 10px; opacity: .7; margin-bottom: 2px; }
+.chat-actions { display: flex; gap: 4px; opacity: 0; transition: opacity .15s; }
+.chat-msg.agent:hover .chat-actions, .chat-actions:focus-within { opacity: 1; }
+.chat-act {
+  border: 1px solid transparent; background: none; cursor: pointer;
+  color: var(--muted); font-size: 10px; line-height: 1.4;
+  padding: 1px 5px; border-radius: 4px;
+}
+.chat-act:hover:not(:disabled) { color: var(--accent); border-color: var(--border); background: var(--bg); }
+.chat-act:disabled { opacity: .4; cursor: not-allowed; }
 .chat-text { word-break: break-word; }
 .chat-text p { margin: 0 0 6px; }
 .chat-text p:last-child { margin-bottom: 0; }
