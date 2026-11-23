@@ -103,9 +103,15 @@ export function MarkdownText({ text }: { text: string }): ReactNode {
       const items: string[] = []
       while (i < lines.length) {
         const m = re.exec(lines[i])
-        if (!m) break
-        items.push(m[1])
-        i++
+        if (m) { items.push(m[1]); i++; continue }
+        // 项间空行（LLM 常见的「松散列表」）：只要下一个非空行还是同类列表项，
+        // 就并进同一个列表，否则会被拆成多个 <ol>，每项都从 1 开始。
+        if (!lines[i].trim()) {
+          let j = i
+          while (j < lines.length && !lines[j].trim()) j++
+          if (j < lines.length && re.test(lines[j])) { i = j; continue }
+        }
+        break
       }
       out.push(ordered
         ? <ol key={key++}>{items.map((it, n) => <li key={n}>{inline(it)}</li>)}</ol>

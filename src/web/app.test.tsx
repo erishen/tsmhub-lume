@@ -602,6 +602,20 @@ describe('MarkdownText', () => {
     expect(screen.getByText('标题')).toBeTruthy()
   })
 
+  it('项间有空行的有序/无序列表合并为一个列表（不会每项都从 1 开始）', () => {
+    const { container } = render(<MarkdownText text={'1. 第一项\n\n2. 第二项\n\n3. 第三项'} />)
+    expect(container.querySelectorAll('ol').length).toBe(1)
+    expect(container.querySelectorAll('li').length).toBe(3)
+    const u = render(<MarkdownText text={'- 甲\n\n- 乙\n\n- 丙'} />)
+    expect(u.container.querySelectorAll('ul').length).toBe(1)
+    expect(u.container.querySelectorAll('li').length).toBe(3)
+    // 空行后不是同类列表项 → 不应把后面的段落吞进列表
+    const x = render(<MarkdownText text={'1. 第一项\n\n普通段落'} />)
+    expect(x.container.querySelectorAll('ol').length).toBe(1)
+    expect(x.container.querySelectorAll('li').length).toBe(1)
+    expect(screen.getByText('普通段落')).toBeTruthy()
+  })
+
   it('拒绝 javascript: 链接（降级为纯文本，不生成 a 标签）', () => {
     const { container } = render(<MarkdownText text="[点我](javascript:alert(1))" />)
     expect(container.querySelector('a')).toBeNull()
