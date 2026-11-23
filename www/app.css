@@ -217,5 +217,11 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   padding: 6px 10px; margin-bottom: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
+.chat-toolbar {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  margin-bottom: 10px; font-size: 12px;
+}
+.chat-toolbar select { min-width: 220px; max-width: 100%; }
+.chat-toolbar .tiny { opacity: .75; }
 .chat-input { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 8px; }
 .chat-input textarea { flex: 1; resize: vertical; }

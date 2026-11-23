@@ -260,6 +260,11 @@ LLM 应用/客户端  --X-Api-Key / Authorization: Bearer: sk-tr-…-->  Lume /v
   启动时把上游 `GET /v1/tools` 目录同步为代理工具（调用时转发
   `POST /v1/tools/invoke`），skills/MCP 一并挂载；与本地内建/脚本工具同名时
   本地实现优先。注意它**不能**和 `LLM_API_URL`（完整 chat 端点）写成同一个值。
+- **模型选择**：Agent 页有模型下拉，选项实时取自 `GET /api/routes` 的路由名
+  （即 tsm-hub 控制台配置的那些），空 model 的默认路由不列出。默认 `auto`
+  不传 `model` 字段；选中后请求体带 `model`，由 tsm-hub 按路由表选 provider
+  并 failover。服务端可选 `LLM_ALLOWED_MODELS`（逗号分隔）限制可覆盖的模型名，
+  留空则不限制、由上游裁决——路由表增删后无需改这里。
 - **会话记忆**：前端按 `sess-<hex>` 生成 sessionId，同一 id 服务端重放历史上下文；
   「新会话」按钮换 id 即清空。
 - **安全边界**：端点有同源 + POST-only 校验（`chat_origin_ok`），跨域 POST 403；
@@ -271,7 +276,8 @@ LLM 应用/客户端  --X-Api-Key / Authorization: Bearer: sk-tr-…-->  Lume /v
 | `LLM_API_URL` | `http://tsm-hub:9070/v1/chat/completions` | agent 的 OpenAI 兼容上游（完整 chat 端点） |
 | `LLM_API_KEY` | 复用 `TSM_CLIENT_KEY` | 留空 = 离线演示引擎 |
 | `ROUTER_API_URL` | `http://tsm-hub:9070/v1` | router 目录同步的 base（拼 `/v1/tools` 等） |
-| `LLM_MODEL` | `auto` | 模型名（走 tsm-hub 路由表） |
+| `LLM_MODEL` | `auto` | 默认模型名（走 tsm-hub 路由表）；页面选中模型时覆盖 |
+| `LLM_ALLOWED_MODELS` | 空 | 可选：请求 `model` 覆盖白名单（逗号分隔）；留空 = 不限制，由 tsm-hub 裁决 |
 | `LLM_TIMEOUT` | `120` | 单次生成超时秒数 |
 
 > 注意：这些变量由 agent-httpd 在 **C 层**直接读取，不经过 Lume 的 `env()`——
@@ -287,9 +293,10 @@ LLM 应用/客户端  --X-Api-Key / Authorization: Bearer: sk-tr-…-->  Lume /v
 
 容器里不需要宿主 Node：`Dockerfile` 两段构建，runtime 只有 alpine + lume 二进制
 （uid 10001，非 root），一个进程负责静态文件、SPA 回退和 `/api/*`。
-lume 二进制在构建期从 GitHub release 下载（Linux x64 static，`ARG LUME_VERSION`
-默认 `v0.14.2`，与 vendor 脚本同一版本），**不依赖本地镜像或兄弟 checkout**，
-因此本机与 CI 行为一致。
+lume 二进制由 `make docker` 在**宿主侧**下载 tarball 并校验 SHA256
+（`LUME_LINUX_VERSION` 默认 `v0.14.2`，与 vendor 脚本同一版本），Dockerfile 只
+COPY + 二次校验——构建期零网络依赖（VM 内 apk CDN / GitHub 常被 TLS 重置），
+本机与 CI 行为一致。
 
 ```bash
 make docker        # → http://127.0.0.1:18108

@@ -590,9 +590,10 @@ describe('AgentPage', () => {
     }
   }
 
-  it('发送消息并流式渲染回复；请求体携带 message + sessionId', async () => {
+  it('发送消息并流式渲染回复；请求体携带 message + sessionId（默认不发 model）', async () => {
     const bodies: any[] = []
-    const fetchMock = vi.fn(async (_url: string, init?: any) => {
+    const fetchMock = vi.fn(async (url: string, init?: any) => {
+      if (String(url).startsWith('/api/routes')) return jsonResponse({ routes: [] })
       bodies.push(JSON.parse(init.body))
       return { ok: true, status: 200, body: { getReader: () => sseReader([
         'data: {"t":"note","d":"round 1"}\n\n',
@@ -609,12 +610,43 @@ describe('AgentPage', () => {
     expect(screen.getByText('你')).toBeTruthy()
     expect(bodies[0].message).toBe('在吗')
     expect(bodies[0].sessionId).toMatch(/^sess-[0-9a-f]{16}$/)
+    expect(bodies[0].model).toBeUndefined()
     // 流结束后状态行清空、发送按钮恢复
     expect(screen.getByText('发送')).toBeTruthy()
   })
 
+  it('模型下拉来自 tsm-hub 路由表，选中后请求体携带 model', async () => {
+    const bodies: any[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: any) => {
+      if (String(url).startsWith('/api/routes')) return jsonResponse({ routes: [
+        { model: '', strategy: 'failover', targets: [] }, // 默认路由不列出
+        { model: 'agnes-2.0-flash', strategy: 'failover', targets: [] },
+        { model: 'smart', strategy: 'failover', targets: [] },
+      ] })
+      bodies.push(JSON.parse(init.body))
+      return { ok: true, status: 200, body: { getReader: () => sseReader([
+        'data: {"t":"delta","d":"ok"}\n\n',
+        'data: {"t":"done"}\n\n',
+      ]) } }
+    }))
+    render(<AgentPage />)
+    await screen.findByRole('option', { name: 'agnes-2.0-flash' })
+    // 空 model 的默认路由不列出；其余按名字排序
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual([
+      'auto（tsm-hub 默认路由）', 'agnes-2.0-flash', 'smart',
+    ])
+    fireEvent.change(screen.getByLabelText('模型'), { target: { value: 'agnes-2.0-flash' } })
+    fireEvent.change(screen.getByPlaceholderText(/向 Agent 提问/), { target: { value: '你好' } })
+    fireEvent.click(screen.getByText('发送'))
+    expect(await screen.findByText('ok')).toBeTruthy()
+    expect(bodies[0]).toEqual({ message: '你好', sessionId: expect.stringMatching(/^sess-/), model: 'agnes-2.0-flash' })
+  })
+
   it('HTTP 失败显示错误提示，空占位气泡被移除', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 403, text: async () => 'Forbidden' })))
+    vi.stubGlobal('fetch', vi.fn(async (url: string) =>
+      String(url).startsWith('/api/routes')
+        ? jsonResponse({ routes: [] })
+        : { ok: false, status: 403, text: async () => 'Forbidden' }))
     render(<AgentPage />)
     fireEvent.change(screen.getByPlaceholderText(/向 Agent 提问/), { target: { value: 'hi' } })
     fireEvent.click(screen.getByText('发送'))
@@ -623,10 +655,12 @@ describe('AgentPage', () => {
   })
 
   it('新会话清空消息并更换 sessionId', async () => {
-    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, body: { getReader: () => sseReader([
-      'data: {"t":"delta","d":"ok"}\n\n',
-      'data: {"t":"done"}\n\n',
-    ]) } }))
+    const fetchMock = vi.fn(async (url: string) => String(url).startsWith('/api/routes')
+      ? jsonResponse({ routes: [] })
+      : { ok: true, status: 200, body: { getReader: () => sseReader([
+          'data: {"t":"delta","d":"ok"}\n\n',
+          'data: {"t":"done"}\n\n',
+        ]) } })
     vi.stubGlobal('fetch', fetchMock)
     render(<AgentPage />)
     fireEvent.change(screen.getByPlaceholderText(/向 Agent 提问/), { target: { value: 'q1' } })

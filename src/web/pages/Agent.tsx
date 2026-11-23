@@ -3,6 +3,8 @@
 // 无状态单轮 chat/completions。流式协议解析在 ../agent.ts（纯函数，可单测）。
 import { useEffect, useRef, useState } from 'react'
 import { agentChat, newSessionId, type AgentEvent } from '../agent'
+import API from '../api'
+import { useLoad } from '../hooks'
 import { Panel } from '../components'
 
 interface ChatMsg {
@@ -17,8 +19,17 @@ export function AgentPage() {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [sessionId, setSessionId] = useState(() => newSessionId())
+  const [model, setModel] = useState('') // 空 = auto（服务端 LLM_MODEL，由 tsm-hub 路由表选）
+  const { data: routesData } = useLoad<any>(() => API.listRoutes())
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
+
+  // 模型选项直接取 tsm-hub 路由表的对外模型名（空 model 的默认路由不列出）。
+  // 路由表变了，刷新页面即可看到新选项；这里不做本地硬编码。
+  const routes = Array.isArray(routesData?.routes) ? routesData.routes : []
+  const models: string[] = Array.from(new Set<string>(
+    routes.map((r: any) => String(r?.model || '')).filter(Boolean) as string[],
+  )).sort()
 
   // 新内容自动滚到底部（jsdom 等环境无 scrollIntoView，用可选调用兜底）。
   useEffect(() => {
@@ -65,7 +76,7 @@ export function AgentPage() {
       // done：由流结束统一收尾。
     }
     try {
-      await agentChat(text, sessionId, ctrl.signal, onEvent)
+      await agentChat(text, sessionId, ctrl.signal, onEvent, model)
     } catch (e: any) {
       if (e?.name !== 'AbortError') setErr(String(e?.message || e))
     } finally {
@@ -88,7 +99,21 @@ export function AgentPage() {
     >
       <div className="notice ok">
         框架原生 ReAct Agent：会话记忆 + 工具调用（控制台只读工具 + tsm-hub 能力目录代理）。
-        模型上游由服务端 <code>LLM_API_URL</code> / <code>LLM_API_KEY</code> 决定，未配置 Key 时为离线演示引擎。
+        模型经 <code>tsm-hub</code> 路由；未配置 Key 时为离线演示引擎。
+      </div>
+      <div className="chat-toolbar">
+        <label htmlFor="agent-model">模型</label>
+        <select
+          id="agent-model"
+          aria-label="模型"
+          value={model}
+          disabled={busy}
+          onChange={(e) => setModel(e.target.value)}
+        >
+          <option value="">auto（tsm-hub 默认路由）</option>
+          {models.map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+        <span className="tiny mono wrap">选项来自 tsm-hub 路由表 · 会话 {sessionId}</span>
       </div>
       <div className="chat-log">
         {messages.length === 0 && <div className="empty">开始与 Agent 对话…</div>}
@@ -122,7 +147,6 @@ export function AgentPage() {
           <button className="btn primary" disabled={!input.trim()} onClick={() => void send()}>发送</button>
         )}
       </div>
-      <div className="tiny mono wrap">会话 {sessionId}</div>
     </Panel>
   )
 }

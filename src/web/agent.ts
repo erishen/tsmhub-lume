@@ -64,11 +64,16 @@ export async function agentChat(
   sessionId: string,
   signal: AbortSignal | undefined,
   onEvent: (e: AgentEvent) => void,
+  model?: string,
 ): Promise<void> {
+  // model 非空才下发：留空 = 服务端 LLM_MODEL（默认 auto，由 tsm-hub 路由表选模型）。
+  // 名字来自 tsm-hub /api/routes 的路由 key；服务端另有 LLM_ALLOWED_MODELS 白名单兜底。
+  const body: Record<string, string> = { message, sessionId }
+  if (model) body.model = model
   const r = await fetch('/react/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, sessionId }),
+    body: JSON.stringify(body),
     signal,
   })
   if (!r.ok || !r.body) {

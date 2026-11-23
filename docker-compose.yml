@@ -32,6 +32,9 @@ services:
       LLM_API_URL: ${LLM_API_URL:-http://tsm-hub:9070/v1/chat/completions}
       ROUTER_API_URL: ${ROUTER_API_URL:-http://tsm-hub:9070/v1}
       LLM_MODEL: ${LLM_MODEL:-auto}
+      # 可选：页面 model 覆盖白名单（逗号分隔，须与 tsm-hub 路由名逐字一致）。
+      # 留空 = 不限制，由 tsm-hub 路由表和 Key 权限裁决。
+      LLM_ALLOWED_MODELS: ${LLM_ALLOWED_MODELS:-}
       LLM_TIMEOUT: ${LLM_TIMEOUT:-120}
       LLM_API_KEY: ${TSM_CLIENT_KEY:-}
       LUME_BIND: 0.0.0.0
