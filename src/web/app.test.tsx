@@ -33,6 +33,7 @@ import {
   App,
 } from './app'
 import { parseAgentSse, newSessionId } from './agent'
+import { MarkdownText } from './markdown'
 
 beforeEach(() => {
   localStorage.clear()
@@ -576,6 +577,38 @@ describe('parseAgentSse', () => {
   })
 })
 
+describe('MarkdownText', () => {
+  it('渲染粗体/行内代码/列表/代码块/表格，纯文本也能显示', () => {
+    const md = [
+      '# 标题',
+      '这是 **粗体** 和 `code`，还有 [链接](https://example.com)。',
+      '- 第一项',
+      '- 第二项',
+      '```json',
+      '{"a": 1}',
+      '```',
+      '| 名字 | 值 |',
+      '| --- | --- |',
+      '| key | 15 |',
+    ].join('\n')
+    const { container } = render(<MarkdownText text={md} />)
+    expect(screen.getByText('粗体').tagName).toBe('STRONG')
+    expect(screen.getByText('code').tagName).toBe('CODE')
+    expect(screen.getByRole('link', { name: '链接' }).getAttribute('href')).toBe('https://example.com')
+    expect(container.querySelectorAll('li').length).toBe(2)
+    expect(container.querySelector('pre code')?.textContent).toBe('{"a": 1}')
+    expect(container.querySelector('table')).toBeTruthy()
+    expect(screen.getByText('key').tagName).toBe('TD')
+    expect(screen.getByText('标题')).toBeTruthy()
+  })
+
+  it('拒绝 javascript: 链接（降级为纯文本，不生成 a 标签）', () => {
+    const { container } = render(<MarkdownText text="[点我](javascript:alert(1))" />)
+    expect(container.querySelector('a')).toBeNull()
+    expect(screen.getByText('点我')).toBeTruthy()
+  })
+})
+
 describe('AgentPage', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -631,6 +664,32 @@ describe('AgentPage', () => {
     expect(await screen.findByText('有 15 个 key')).toBeTruthy()
     expect(bodies[0].message).toBe('现在有多少个 key？')
     expect(screen.queryByText('试试问：')).toBeNull()
+  })
+
+  it('回答完成后出现新一组追问示例，点击即发；失败不出', async () => {
+    const bodies: any[] = []
+    const fetchMock = vi.fn(async (url: string, init?: any) => {
+      if (String(url).startsWith('/api/routes')) return jsonResponse({ routes: [] })
+      bodies.push(JSON.parse(init.body))
+      return { ok: true, status: 200, body: { getReader: () => sseReader([
+        'data: {"t":"delta","d":"好的"}\n\n',
+        'data: {"t":"done"}\n\n',
+      ]) } }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<AgentPage />)
+    expect(screen.queryByText('还可以问：')).toBeNull()
+    fireEvent.change(screen.getByPlaceholderText(/向 Agent 提问/), { target: { value: 'hi' } })
+    fireEvent.click(screen.getByText('发送'))
+    expect(await screen.findByText('好的')).toBeTruthy()
+    // 追问示例出现，且与首屏引导不是同一批
+    expect(screen.getByText('还可以问：')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '示例问题：哪个 provider 错误率最高？' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '示例问题：现在有多少个 key？' })).toBeNull()
+    // 点追问 → 按该文本再发一轮
+    fireEvent.click(screen.getByRole('button', { name: '示例问题：哪个 provider 错误率最高？' }))
+    expect(await screen.findByText('好的')).toBeTruthy()
+    expect(bodies[1].message).toBe('哪个 provider 错误率最高？')
   })
 
   it('模型下拉来自 tsm-hub 路由表，选中后请求体携带 model', async () => {

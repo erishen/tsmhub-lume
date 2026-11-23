@@ -6,6 +6,7 @@ import { agentChat, newSessionId, type AgentEvent } from '../agent'
 import API from '../api'
 import { useLoad } from '../hooks'
 import { Panel } from '../components'
+import { MarkdownText } from '../markdown'
 
 interface ChatMsg {
   role: 'user' | 'agent'
@@ -13,12 +14,20 @@ interface ChatMsg {
 }
 
 // 示例问题：只挑 agent 现有只读工具能回答的，避免误导用户以为它能执行写操作。
-const SUGGESTIONS = [
+// 首屏引导问题 + 回答完成后的追问问题（两组交替，避免每次都是同一批）。
+const INTRO_SUGGESTIONS = [
   '现在有多少个 key？',
   '今天的用量和成本是多少？',
   '哪些 provider 不健康？',
   '当前有哪些路由？',
   '给我看一下整体概览',
+]
+const FOLLOWUP_SUGGESTIONS = [
+  '哪个 provider 错误率最高？',
+  '今天总共花了多少钱？',
+  '哪些 key 没有用量？',
+  '路由表的 failover 是怎么配置的？',
+  '总结一下现在的系统状态',
 ]
 
 export function AgentPage() {
@@ -29,9 +38,11 @@ export function AgentPage() {
   const [err, setErr] = useState('')
   const [sessionId, setSessionId] = useState(() => newSessionId())
   const [model, setModel] = useState('') // 空 = auto（服务端 LLM_MODEL，由 tsm-hub 路由表选）
+  const [showFollowup, setShowFollowup] = useState(false) // 回答完成后显示下一组追问示例
   const { data: routesData } = useLoad<any>(() => API.listRoutes())
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
+  const gotDeltaRef = useRef(false) // 本轮是否收到过 delta（区分成功回复与失败/空回复）
 
   // 模型选项直接取 tsm-hub 路由表的对外模型名（空 model 的默认路由不列出）。
   // 路由表变了，刷新页面即可看到新选项；这里不做本地硬编码。
@@ -57,6 +68,7 @@ export function AgentPage() {
     setNote('')
     setErr('')
     setSessionId(newSessionId())
+    setShowFollowup(false)
   }
 
   const send = async (override?: string) => {
@@ -65,12 +77,15 @@ export function AgentPage() {
     setInput('')
     setErr('')
     setNote('')
+    setShowFollowup(false)
+    gotDeltaRef.current = false
     setMessages((m) => [...m, { role: 'user', text }, { role: 'agent', text: '' }])
     setBusy(true)
     const ctrl = new AbortController()
     abortRef.current = ctrl
     const onEvent = (e: AgentEvent) => {
       if (e.t === 'delta') {
+        gotDeltaRef.current = true
         setMessages((m) => {
           const copy = m.slice()
           const last = copy[copy.length - 1]
@@ -98,6 +113,8 @@ export function AgentPage() {
         if (last && last.role === 'agent' && !last.text) return m.slice(0, -1)
         return m
       })
+      // 有实际回复才出下一组示例；停止/失败不出。
+      if (gotDeltaRef.current && !ctrl.signal.aborted) setShowFollowup(true)
     }
   }
 
@@ -130,16 +147,8 @@ export function AgentPage() {
             <div className="empty">开始与 Agent 对话…</div>
             <div className="chat-suggests">
               <span className="tiny">试试问：</span>
-              {SUGGESTIONS.map((q) => (
-                <button
-                  key={q}
-                  className="btn sm"
-                  disabled={busy}
-                  aria-label={`示例问题：${q}`}
-                  onClick={() => void send(q)}
-                >
-                  {q}
-                </button>
+              {INTRO_SUGGESTIONS.map((q) => (
+                <button key={q} className="btn sm" disabled={busy} aria-label={`示例问题：${q}`} onClick={() => void send(q)}>{q}</button>
               ))}
             </div>
           </div>
@@ -147,9 +156,21 @@ export function AgentPage() {
         {messages.map((m, i) => (
           <div key={i} className={m.role === 'user' ? 'chat-msg user' : 'chat-msg agent'}>
             <div className="chat-role">{m.role === 'user' ? '你' : 'Agent'}</div>
-            <div className="chat-text">{m.text || (i === messages.length - 1 && busy ? '…' : '')}</div>
+            <div className="chat-text">
+              {m.role === 'agent'
+                ? (m.text ? <MarkdownText text={m.text} /> : (i === messages.length - 1 && busy ? '…' : ''))
+                : m.text}
+            </div>
           </div>
         ))}
+        {showFollowup && !busy && (
+          <div className="chat-suggests followup">
+            <span className="tiny">还可以问：</span>
+            {FOLLOWUP_SUGGESTIONS.map((q) => (
+              <button key={q} className="btn sm" aria-label={`示例问题：${q}`} onClick={() => void send(q)}>{q}</button>
+            ))}
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
       {note && <div className="chat-note">{note}</div>}
