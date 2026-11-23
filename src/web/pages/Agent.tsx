@@ -52,9 +52,11 @@ export function AgentPage() {
   )).sort()
 
   // 新内容自动滚到底部（jsdom 等环境无 scrollIntoView，用可选调用兜底）。
+  // 依赖含 showFollowup / busy：回答完成追问区出现、或发送期间占位出现时也要滚到底，
+  // 否则追问区渲染在可见区域下方，用户看不到。
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.({ block: 'end' })
-  }, [messages, note])
+  }, [messages, note, showFollowup, busy])
 
   const stop = () => {
     abortRef.current?.abort()
