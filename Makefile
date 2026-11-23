@@ -31,7 +31,8 @@ $(LUME_LINUX_TGZ):
 	@echo "▶ 下载 lume $(LUME_LINUX_VERSION) linux-x64-static（宿主侧）"
 	curl -fsSL --http1.1 --retry 3 --retry-all-errors -C - -o $@ \
 	  "https://github.com/erishen/lume/releases/download/$(LUME_LINUX_VERSION)/lume-linux-x64-static.tar.gz"
-	@echo "$(LUME_LINUX_SHA256)  $@" | shasum -a 256 -c -
+	@echo "$(LUME_LINUX_SHA256)  $@" | \
+	  if command -v sha256sum >/dev/null 2>&1; then sha256sum -c -; else shasum -a 256 -c -; fi
 
 .PHONY: vendor check typecheck ui node_modules test-fe test test-local run dev stop smoke clean logs-clean docker docker-logs docker-down
 

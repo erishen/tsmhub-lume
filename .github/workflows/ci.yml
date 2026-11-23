@@ -1,8 +1,9 @@
 # tsmhub-lume CI —— 静态门禁 + 自包含冒烟 + docker 镜像构建/启动冒烟
 #
-# 全部自包含，不依赖外部服务 / 本地镜像 / 兄弟 checkout：
-#   - lume 二进制与 lume-core 由 make vendor 从 GitHub release 拉（v0.13.1）
-#   - docker 构建的 lume-bin 阶段也从 GitHub release 下载 lume（Linux x64 static）
+# 全部自包含，不依赖本地镜像 / 兄弟 checkout / 上游服务：
+#   - lume 二进制与 lume-core 由 make vendor 从 GitHub release 拉（v0.14.2）
+#   - 镜像构建所需的 lume tarball 由 make 在宿主侧下载 + SHA256 校验后 COPY 进镜像
+#     （构建期零网络依赖，避免 CI 内 apk CDN / GitHub 被 TLS 重置）
 #   - 冒烟不要求上游 tsm-hub 在线（--no-upstream）
 #
 # 触发：push 到 main / 任意 PR。
@@ -54,7 +55,12 @@ jobs:
       - name: 设置 Buildx（层缓存走 GHA）
         uses: docker/setup-buildx-action@v3
 
-      - name: 构建镜像（lume 从 release 下载；层缓存复用 npm ci / lume 下载）
+      # Dockerfile 的 lume-bin 阶段只 COPY 这份 tarball（不联网下载），
+      # 所以必须在 build 之前由宿主侧生成并校验（Makefile 里 pin 了版本与 SHA256）。
+      - name: 下载并校验 lume tarball
+        run: make vendor/lume/lume-linux-x64-static.tar.gz
+
+      - name: 构建镜像（tarball 已就绪；层缓存复用 npm ci）
         uses: docker/build-push-action@v6
         with:
           context: .
