@@ -775,6 +775,35 @@ describe('AgentPage', () => {
     expect(screen.queryByText('…')).toBeNull()
   })
 
+  it('服务端 done 后不关闭流也能收尾：追问区出现在滚动区外，按钮恢复发送', async () => {
+    let readCount = 0
+    const cancel = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => String(url).startsWith('/api/routes')
+      ? jsonResponse({ routes: [] })
+      : { ok: true, status: 200, body: { getReader: () => ({
+          read: async () => {
+            if (readCount++ === 0) {
+              return { done: false, value: new TextEncoder().encode(
+                'data: {"t":"delta","d":"回答完毕"}\n\ndata: {"t":"done"}\n\n',
+              ) }
+            }
+            return new Promise(() => {}) // 服务端保持连接不关，傻等会卡住 busy
+          },
+          cancel,
+        }) } }))
+    const { container } = render(<AgentPage />)
+    fireEvent.change(screen.getByPlaceholderText(/向 Agent 提问/), { target: { value: 'q' } })
+    fireEvent.click(screen.getByText('发送'))
+    expect(await screen.findByText('回答完毕')).toBeTruthy()
+    // 追问区出现，且不在限高可滚动的 chat-log 内部（长回答时不会被裁掉）
+    expect(screen.getByText('还可以问：')).toBeTruthy()
+    expect(container.querySelector('.chat-log .chat-suggests.followup')).toBeNull()
+    expect(container.querySelector('.chat-input + .chat-suggests.followup, .chat-suggests.followup')).toBeTruthy()
+    // 发送按钮恢复（而非一直显示「停止」）
+    expect(screen.getByText('发送')).toBeTruthy()
+    expect(cancel).toHaveBeenCalled()
+  })
+
   it('新会话清空消息并更换 sessionId', async () => {
     const fetchMock = vi.fn(async (url: string) => String(url).startsWith('/api/routes')
       ? jsonResponse({ routes: [] })

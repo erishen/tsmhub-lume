@@ -89,10 +89,16 @@ export async function agentChat(
   const reader = r.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''
+  let sawDone = false
   const flush = () => {
     const { events, rest } = parseAgentSse(buf)
     buf = rest
-    events.forEach(onEvent)
+    for (const e of events) {
+      onEvent(e)
+      // 收到 done 就立即收尾：服务端可能在 done 后保持 SSE 连接不关，
+      // 若傻等 reader.done，界面会一直 busy，追问区永远出不来。
+      if (e.t === 'done') sawDone = true
+    }
   }
   for (;;) {
     const { done, value } = await reader.read()
@@ -100,8 +106,13 @@ export async function agentChat(
       buf += decoder.decode(value, { stream: true })
       flush()
     }
-    if (done) break
+    if (done || sawDone) break
   }
-  buf += decoder.decode()
-  flush()
+  if (!sawDone) {
+    buf += decoder.decode()
+    flush()
+  }
+  // 主动取消尚未关闭的流，释放连接（流已结束时 cancel 也安全）。
+  if (sawDone && !reader.cancel) { /* 老环境无 cancel，忽略 */ }
+  else if (sawDone) void reader.cancel().catch(() => {})
 }

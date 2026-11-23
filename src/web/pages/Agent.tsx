@@ -235,18 +235,19 @@ export function AgentPage() {
             </div>
           </div>
         ))}
-        {showFollowup && !busy && (
-          <div className="chat-suggests followup">
-            <span className="tiny">还可以问：</span>
-            {FOLLOWUP_SUGGESTIONS.map((q) => (
-              <button key={q} className="btn sm" aria-label={`示例问题：${q}`} onClick={() => void send(q)}>{q}</button>
-            ))}
-          </div>
-        )}
         <div ref={bottomRef} />
       </div>
       {note && <div className="chat-note">{note}</div>}
       {err && <div className="notice err">{err}</div>}
+      {/* 追问区放在可滚动的 chat-log 之外、输入框上方：长回答时不会排在滚动区底部而看不到。 */}
+      {showFollowup && !busy && (
+        <div className="chat-suggests followup">
+          <span className="tiny">还可以问：</span>
+          {FOLLOWUP_SUGGESTIONS.map((q) => (
+            <button key={q} className="btn sm" aria-label={`示例问题：${q}`} onClick={() => void send(q)}>{q}</button>
+          ))}
+        </div>
+      )}
       <div className="chat-input">
         <textarea
           rows={2}

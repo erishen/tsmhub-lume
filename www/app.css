@@ -242,7 +242,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .chat-text table { border-collapse: collapse; margin: 6px 0; font-size: 12px; }
 .chat-text th, .chat-text td { border: 1px solid var(--border); padding: 3px 8px; text-align: left; }
 .chat-text a { color: var(--accent); }
-.chat-suggests.followup { justify-content: flex-start; padding: 2px 0 10px; }
+.chat-suggests.followup {
+  justify-content: flex-start; padding: 8px 10px; margin-bottom: 10px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+}
 .chat-note {
   font-size: 11px; color: var(--muted);
   background: var(--panel-2); border-radius: 6px;
