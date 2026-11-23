@@ -50,6 +50,87 @@ function cells(line: string): string[] {
   return line.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim())
 }
 
+// ---- 列表：按缩进建树，避免「1. 顶层 / - 缩进子项 / 1. 顶层」被拆成多个单元素 <ol> ----
+// LLM 输出的有序列表常把每项都写成 "1."，靠 <ol> 自动编号才是 1/2/3；
+// 而每项下挂缩进的无序子列表会让朴素的行扫描提前 break，导致每项都从 1 开始。
+interface ListNode {
+  kind: 'ol' | 'ul'
+  text: string
+  children: ListNode[]
+}
+
+function listLine(line: string): { indent: number; kind: 'ol' | 'ul'; text: string } | null {
+  const m = /^(\s*)(?:[-*+]|(\d+[.)]))\s+(.*)$/.exec(line)
+  if (!m) return null
+  return {
+    indent: m[1].replace(/\t/g, '  ').length,
+    kind: m[2] ? 'ol' : 'ul',
+    text: m[3],
+  }
+}
+
+/** 从 lines[start] 起收集一段列表，返回扁平的顶层节点树与结束下标。 */
+function readList(lines: string[], start: number): { nodes: ListNode[]; next: number } {
+  const roots: ListNode[] = []
+  const stack: ListNode[] = []       // 路径：每层最近加入的节点
+  const indents: number[] = []       // 与 stack 对应的缩进宽度
+  let i = start
+  while (i < lines.length) {
+    const cur = listLine(lines[i])
+    if (!cur) {
+      // 项间空行：若后面还有列表项（任意层级）则跳过继续，否则本段结束。
+      if (!lines[i].trim()) {
+        let j = i
+        while (j < lines.length && !lines[j].trim()) j++
+        if (j < lines.length && listLine(lines[j])) { i = j; continue }
+      }
+      break
+    }
+    while (indents.length && indents[indents.length - 1] >= cur.indent) {
+      indents.pop()
+      stack.pop()
+    }
+    const node: ListNode = { kind: cur.kind, text: cur.text, children: [] }
+    if (stack.length) stack[stack.length - 1].children.push(node)
+    else roots.push(node)
+    stack.push(node)
+    indents.push(cur.indent)
+    i++
+  }
+  return { nodes: roots, next: i }
+}
+
+/** 连续同类型的兄弟节点合并进同一个 <ol>/<ul>，不同类型断开成新列表。 */
+function renderNodes(nodes: ListNode[], prefix: string): ReactNode[] {
+  const out: ReactNode[] = []
+  let group: ListNode[] = []
+  let kind: 'ol' | 'ul' | null = null
+  const flush = () => {
+    if (!group.length || !kind) return
+    const items = group
+    const Tag = kind
+    out.push(
+      <Tag key={`${prefix}-l`}>
+        {items.map((n, idx) => (
+          <li key={idx}>
+            {inline(n.text)}
+            {n.children.length ? renderNodes(n.children, `${prefix}-${idx}`) : null}
+          </li>
+        ))}
+      </Tag>,
+    )
+    group = []
+    kind = null
+  }
+  for (const n of nodes) {
+    if (kind !== n.kind) flush()
+    group.push(n)
+    kind = n.kind
+  }
+  flush()
+  return out
+}
+
 /** 把 Markdown 文本渲染成 React 节点；非 Markdown 的纯文本也能正常展示。 */
 export function MarkdownText({ text }: { text: string }): ReactNode {
   const lines = text.split('\n')
@@ -94,28 +175,12 @@ export function MarkdownText({ text }: { text: string }): ReactNode {
       continue
     }
 
-    // 列表（无序 / 有序）。
-    const ul = /^\s*[-*+]\s+(.*)$/.exec(line)
-    const ol = /^\s*\d+[.)]\s+(.*)$/.exec(line)
-    if (ul || ol) {
-      const ordered = !!ol
-      const re = ordered ? /^\s*\d+[.)]\s+(.*)$/ : /^\s*[-*+]\s+(.*)$/
-      const items: string[] = []
-      while (i < lines.length) {
-        const m = re.exec(lines[i])
-        if (m) { items.push(m[1]); i++; continue }
-        // 项间空行（LLM 常见的「松散列表」）：只要下一个非空行还是同类列表项，
-        // 就并进同一个列表，否则会被拆成多个 <ol>，每项都从 1 开始。
-        if (!lines[i].trim()) {
-          let j = i
-          while (j < lines.length && !lines[j].trim()) j++
-          if (j < lines.length && re.test(lines[j])) { i = j; continue }
-        }
-        break
-      }
-      out.push(ordered
-        ? <ol key={key++}>{items.map((it, n) => <li key={n}>{inline(it)}</li>)}</ol>
-        : <ul key={key++}>{items.map((it, n) => <li key={n}>{inline(it)}</li>)}</ul>)
+    // 列表（无序 / 有序，支持缩进子列表与项间空行）。
+    if (listLine(line)) {
+      const { nodes, next } = readList(lines, i)
+      out.push(...renderNodes(nodes, `list${key}`))
+      i = next
+      key++
       continue
     }
 

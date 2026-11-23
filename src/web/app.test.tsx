@@ -616,6 +616,36 @@ describe('MarkdownText', () => {
     expect(screen.getByText('普通段落')).toBeTruthy()
   })
 
+  it('有序项下挂缩进无序子列表：仍是一个 <ol>，自动编号不都显示 1', () => {
+    const md = [
+      '根据当前 provider 健康状态数据，需要关注：',
+      '',
+      '1. alibailian',
+      '   - 半开放状态（half_open : true）',
+      '   - 问题：免费配额耗尽',
+      '1. openrouter',
+      '   - 半开放状态（half_open : true）',
+      '1. sensenova',
+      '   - 最近出现 JSON 格式错误',
+      '',
+      '其他 provider 虽然有错误记录，但 healthy 为 true。',
+    ].join('\n')
+    const { container } = render(<MarkdownText text={md} />)
+    const ol = container.querySelector('ol')!
+    expect(ol).toBeTruthy()
+    // 顶层 3 个 <li> → 浏览器自动编号 1/2/3（源码里都是 "1." 也没关系）
+    expect(ol.children.length).toBe(3)
+    expect(Array.from(ol.children).map((li) => li.tagName)).toEqual(['LI', 'LI', 'LI'])
+    // 缩进子项归入各自父 <li>，不再打断外层 <ol>
+    expect(ol.querySelectorAll('ul').length).toBe(3)
+    expect(ol.children[0].querySelectorAll('li').length).toBe(2)
+    expect(ol.children[1].querySelectorAll('li').length).toBe(1)
+    // 列表前后的普通段落独立渲染，不被吞进列表项
+    expect(container.querySelectorAll('p').length).toBe(2)
+    expect(screen.getByText(/根据当前 provider/)).toBeTruthy()
+    expect(screen.getByText(/其他 provider/)).toBeTruthy()
+  })
+
   it('拒绝 javascript: 链接（降级为纯文本，不生成 a 标签）', () => {
     const { container } = render(<MarkdownText text="[点我](javascript:alert(1))" />)
     expect(container.querySelector('a')).toBeNull()
