@@ -60,12 +60,23 @@ jobs:
       - name: 下载并校验 lume tarball
         run: make vendor/lume/lume-linux-x64-static.tar.gz
 
+      # lume.version 是 shell 兼容的 KEY=value，source 后写入 GITHUB_ENV，
+      # 供下一步 build-args 使用（Makefile 的 export 不会跨 step 存活）。
+      - name: 读取 lume 校验和
+        run: |
+          . ./lume.version
+          echo "LUME_SHA256=$LUME_SHA256" >> "$GITHUB_ENV"
+
       - name: 构建镜像（tarball 已就绪；层缓存复用 npm ci）
         uses: docker/build-push-action@v6
         with:
           context: .
           load: true
           tags: tsmhub-lume:test
+          # SHA 来自唯一数据源 lume.version（经 Makefile export），与宿主侧
+          # 下载校验的是同一个值；Dockerfile 无默认值，必须显式传入。
+          build-args: |
+            LUME_SHA256=${{ env.LUME_SHA256 }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

@@ -20,18 +20,21 @@ LUME     ?= vendor/lume/bin/lume
 PORT     ?= 8097
 TSM_BASE ?= http://127.0.0.1:9070
 
+# lume 版本/SHA 的唯一数据源（lume.version），供 Makefile / shell / CI / Dockerfile 共用。
+# 升级 lume：只改 lume.version 两行，删掉 tarball 重跑 make docker。
+include lume.version
+export LUME_VERSION LUME_SHA256
+
 # docker 构建用的 lume release tarball：宿主侧下载 + SHA256 校验（宿主网络可控、
 # 可走代理），Dockerfile 只 COPY + 二次校验 —— 构建期不再访问网络（VM 内 apk
-# CDN 与 GitHub 都可能被重置）。升级 lume：改下面两个值后删掉 tarball 重跑。
-LUME_LINUX_VERSION := v0.14.2
-LUME_LINUX_SHA256 := 8da8cb7e307b303e490eb80ad92800b6362418bb882824b74c6939f0672fd3b0
+# CDN 与 GitHub 都可能被重置）。
 LUME_LINUX_TGZ := vendor/lume/lume-linux-x64-static.tar.gz
 
 $(LUME_LINUX_TGZ):
-	@echo "▶ 下载 lume $(LUME_LINUX_VERSION) linux-x64-static（宿主侧）"
+	@echo "▶ 下载 lume $(LUME_VERSION) linux-x64-static（宿主侧）"
 	curl -fsSL --http1.1 --retry 3 --retry-all-errors -C - -o $@ \
-	  "https://github.com/erishen/lume/releases/download/$(LUME_LINUX_VERSION)/lume-linux-x64-static.tar.gz"
-	@echo "$(LUME_LINUX_SHA256)  $@" | \
+	  "https://github.com/erishen/lume/releases/download/$(LUME_VERSION)/lume-linux-x64-static.tar.gz"
+	@echo "$(LUME_SHA256)  $@" | \
 	  if command -v sha256sum >/dev/null 2>&1; then sha256sum -c -; else shasum -a 256 -c -; fi
 
 .PHONY: vendor auth check typecheck ui node_modules test-fe test test-local run dev stop smoke clean logs-clean docker docker-logs docker-down

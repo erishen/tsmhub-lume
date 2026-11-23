@@ -2,7 +2,7 @@
 // 与 Playground 的区别：这是 ReAct Agent（会话记忆 + 工具调用），Playground 是
 // 无状态单轮 chat/completions。流式协议解析在 ../agent.ts（纯函数，可单测）。
 import { useEffect, useRef, useState } from 'react'
-import { agentChat, newSessionId, type AgentEvent } from '../agent'
+import { agentChat, loadSessionId, newSessionId, saveSessionId, type AgentEvent } from '../agent'
 import API from '../api'
 import { useLoad } from '../hooks'
 import { Panel } from '../components'
@@ -36,7 +36,7 @@ export function AgentPage() {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
-  const [sessionId, setSessionId] = useState(() => newSessionId())
+  const [sessionId, setSessionId] = useState(loadSessionId)
   const [model, setModel] = useState('') // 空 = auto（服务端 LLM_MODEL，由 tsm-hub 路由表选）
   const [showFollowup, setShowFollowup] = useState(false) // 回答完成后显示下一组追问示例
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null) // 最近一次复制成功的消息下标（短暂反馈）
@@ -71,7 +71,9 @@ export function AgentPage() {
     setMessages([])
     setNote('')
     setErr('')
-    setSessionId(newSessionId())
+    const fresh = newSessionId()
+    saveSessionId(fresh)
+    setSessionId(fresh)
     setShowFollowup(false)
     setCopiedIdx(null)
   }

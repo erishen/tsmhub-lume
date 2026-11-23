@@ -26,9 +26,14 @@ ENTRY="$ROOT/tsmhub_lume.lume"
 CHECK_ONLY=0
 [ "${1:-}" = "--check" ] && CHECK_ONLY=1
 
-# release 兜底用的已发布版本（本地兄弟 checkout 优先，版本以 .vendor-stamp 为准）
-LUME_VERSION="${LUME_VERSION:-v0.13.1}"
-LUME_CORE_TAG="${LUME_CORE_TAG:-v0.13.1}"
+# release 兜底用的已发布版本（本地兄弟 checkout 优先，版本以 .vendor-stamp 为准）。
+# 默认从仓库根目录的 lume.version 读取（与 Makefile / Docker / CI 同一数据源），
+# 环境变量仍可显式覆盖以便临时试版本。
+if [ -f "$ROOT/lume.version" ]; then
+  . "$ROOT/lume.version"
+fi
+LUME_VERSION="${LUME_VERSION:-v0.14.2}"
+LUME_CORE_TAG="${LUME_CORE_TAG:-$LUME_VERSION}"
 LUME_REPO="${LUME_REPO:-erishen/lume}"
 LUME_CORE_REPO="${LUME_CORE_REPO:-erishen/lume-core}"
 

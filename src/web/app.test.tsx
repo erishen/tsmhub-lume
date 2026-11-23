@@ -32,11 +32,12 @@ import {
   AgentPage,
   App,
 } from './app'
-import { parseAgentSse, newSessionId } from './agent'
+import { parseAgentSse, newSessionId, agentChat, loadSessionId, saveSessionId, SESSION_KEY } from './agent'
 import { MarkdownText } from './markdown'
 
 beforeEach(() => {
   localStorage.clear()
+  sessionStorage.clear()
   window.history.replaceState({}, '', '/')
 })
 afterEach(cleanup)
@@ -545,6 +546,53 @@ describe('BalancesPage / ModelsPage / RecommendationsPage / SettingsPage', () =>
 
 // ---------- lume agent：SSE 解析与聊天页 ----------
 
+describe('agentChat 超时保护', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  function stalledFetch() {
+    // 服务端连上但永不发数据：read() 返回悬挂 Promise，模拟半死连接。
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body: { getReader: () => ({ read: () => new Promise(() => {}), cancel: vi.fn() }) },
+    })))
+  }
+
+  it('首字节超时：无数据到达时自动中断并抛明确错误', async () => {
+    stalledFetch()
+    await expect(agentChat('q', 'sess-x', undefined, () => {}, undefined,
+      { firstByteMs: 20, totalMs: 500 }))
+      .rejects.toThrow(/首字节超时.*已自动停止/)
+  })
+
+  it('整体超时：收到首字节后一直不发 done，到时限自动中断', async () => {
+    let n = 0
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body: { getReader: () => ({
+        // 第一块给 delta（撤掉首字节计时器），之后永久悬挂。
+        read: () => (n++ === 0
+          ? Promise.resolve({ done: false, value: new TextEncoder().encode('data: {"t":"delta","d":"x"}\n\n') })
+          : new Promise(() => {})),
+        cancel: vi.fn(),
+      }) },
+    })))
+    await expect(agentChat('q', 'sess-x', undefined, () => {}, undefined,
+      { firstByteMs: 200, totalMs: 40 }))
+      .rejects.toThrow(/响应超时.*已自动停止/)
+  })
+
+  it('外部 abort（用户点停止）保持 AbortError，不误报成超时', async () => {
+    stalledFetch()
+    const ctrl = new AbortController()
+    ctrl.abort()
+    await expect(agentChat('q', 'sess-x', ctrl.signal, () => {}, undefined,
+      { firstByteMs: 300, totalMs: 500 }))
+      .rejects.toMatchObject({ name: 'AbortError' })
+  })
+})
+
 describe('parseAgentSse', () => {
   it('解析 delta/note/done 信封，忽略注释心跳与非 data 行', () => {
     const r = parseAgentSse(
@@ -574,6 +622,20 @@ describe('parseAgentSse', () => {
     const id = newSessionId()
     expect(id.startsWith('sess-')).toBe(true)
     expect(/^[A-Za-z0-9\-_+]+$/.test(id)).toBe(true)
+  })
+
+  it('会话 ID 持久化：刷新后复用、新会话覆盖、脏值回退生成新 ID', () => {
+    const a = loadSessionId()
+    expect(sessionStorage.getItem(SESSION_KEY)).toBe(a)
+    // 模拟页面刷新：再次读取仍是同一个
+    expect(loadSessionId()).toBe(a)
+    const b = newSessionId()
+    saveSessionId(b)
+    expect(loadSessionId()).toBe(b)
+    sessionStorage.setItem(SESSION_KEY, '脏值!@#')
+    const c = loadSessionId()
+    expect(c).not.toBe('脏值!@#')
+    expect(c.startsWith('sess-')).toBe(true)
   })
 })
 
@@ -804,7 +866,7 @@ describe('AgentPage', () => {
     expect(cancel).toHaveBeenCalled()
   })
 
-  it('新会话清空消息并更换 sessionId', async () => {
+  it('新会话清空消息并更换 sessionId，且覆盖持久化的会话', async () => {
     const fetchMock = vi.fn(async (url: string) => String(url).startsWith('/api/routes')
       ? jsonResponse({ routes: [] })
       : { ok: true, status: 200, body: { getReader: () => sseReader([
@@ -813,13 +875,16 @@ describe('AgentPage', () => {
         ]) } })
     vi.stubGlobal('fetch', fetchMock)
     render(<AgentPage />)
-    fireEvent.change(screen.getByPlaceholderText(/向 Agent 提问/), { target: { value: 'q1' } })
-    fireEvent.click(screen.getByText('发送'))
-    await screen.findByText('ok')
+    // 等路由表加载完（useLoad 的异步 setState），否则断言后 resolve 会触发 act 警告
+    await screen.findByRole('option', { name: 'auto（tsm-hub 默认路由）' })
     const firstSid = screen.getByText(/会话 sess-/).textContent
+    expect(sessionStorage.getItem(SESSION_KEY)).toBeTruthy()
     fireEvent.click(screen.getByText('新会话'))
     expect(screen.getByText(/开始与 Agent 对话/)).toBeTruthy()
-    expect(screen.getByText(/会话 sess-/).textContent).not.toBe(firstSid)
+    const nextSid = screen.getByText(/会话 sess-/).textContent
+    expect(nextSid).not.toBe(firstSid)
+    expect(sessionStorage.getItem(SESSION_KEY)).toBeTruthy()
+    expect(loadSessionId()).toBeTruthy()
   })
 
   it('回答可复制 Markdown 原文，复制后短暂显示“已复制”', async () => {

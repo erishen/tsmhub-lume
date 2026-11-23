@@ -1,0 +1,5 @@
+# lume 版本与 tarball 校验和 —— 全仓唯一数据源。
+# Makefile 用 `include lume.version` 读取；shell 脚本/CI 用 `. ./lume.version` 读取。
+# 升级 lume：只改这里两行，然后删除 vendor/lume/lume-linux-x64-static.tar.gz 重跑 make docker。
+LUME_VERSION=v0.14.2
+LUME_SHA256=8da8cb7e307b303e490eb80ad92800b6362418bb882824b74c6939f0672fd3b0

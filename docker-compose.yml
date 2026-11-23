@@ -13,8 +13,9 @@ services:
     build:
       context: .
       args:
-        # lume 二进制从 GitHub release 下载（Dockerfile 里 ARG LUME_VERSION）。
-        LUME_VERSION: ${LUME_VERSION:-v0.14.2}
+        # 由 Makefile 从 lume.version 导出并传给 Dockerfile 做 tarball 二次校验。
+        # 单独 docker compose build 时需自己传 LUME_SHA256（见 lume.version）。
+        LUME_SHA256: ${LUME_SHA256:?请通过 make docker 构建（需 LUME_SHA256）}
     image: tsmhub-lume:dev
     container_name: tsmhub-lume
     ports:

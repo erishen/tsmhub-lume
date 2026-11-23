@@ -304,10 +304,11 @@ docker compose up -d   # 环境变量变更，无需重建镜像
 
 容器里不需要宿主 Node：`Dockerfile` 两段构建，runtime 只有 alpine + lume 二进制
 （uid 10001，非 root），一个进程负责静态文件、SPA 回退和 `/api/*`。
-lume 二进制由 `make docker` 在**宿主侧**下载 tarball 并校验 SHA256
-（`LUME_LINUX_VERSION` 默认 `v0.14.2`，与 vendor 脚本同一版本），Dockerfile 只
-COPY + 二次校验——构建期零网络依赖（VM 内 apk CDN / GitHub 常被 TLS 重置），
-本机与 CI 行为一致。
+lume 二进制由 `make docker` 在**宿主侧**下载 tarball 并校验 SHA256。版本与
+校验和的**唯一数据源**是根目录 `lume.version`（当前 `v0.14.2`），Makefile、
+vendor 脚本、Dockerfile build-arg、CI 都从它读取，升级只改这一处。Dockerfile
+只 COPY + 用传入的 SHA 二次校验——构建期零网络依赖（VM 内 apk CDN / GitHub
+常被 TLS 重置），本机与 CI 行为一致。
 
 ```bash
 make docker        # → http://127.0.0.1:18108
@@ -324,4 +325,4 @@ docker compose down
 
 `vendor/.vendor-stamp` 记录二进制版本与库来源。本地兄弟 checkout 存在时用它
 （本次实测：lume `0.14.2` + lume-core 工作树 `de7ce92`）；单独 clone 时从 GitHub
-release 拉 `LUME_VERSION` / `LUME_CORE_TAG`（默认 `v0.14.2`）。
+release 拉 `LUME_VERSION` / `LUME_CORE_TAG`（默认取 `lume.version`，当前 `v0.14.2`）。

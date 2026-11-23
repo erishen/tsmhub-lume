@@ -5,3 +5,8 @@ logs/
 .git/
 .vendor-dl.*
 *.log
+# 密钥与本地环境文件不进 build context（Dockerfile 不 COPY 它们，但在
+# 远程 builder 场景下整个 context 会上传；显式排除避免泄露面）。
+.env
+.env.*
+!.env.example
