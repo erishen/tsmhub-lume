@@ -117,14 +117,20 @@ export function App() {
           <div className="topbar-right">
             <span className={health?.ok ? 'health-dot ok' : 'health-dot err'} role="status" aria-label={health?.ok ? '上游正常' : '上游异常'} title={health?.error || ''} />
             <span className="tiny mono">{health?.ok ? '上游正常' : '上游异常'}</span>
-            <label className="role-pick">
-              <span className="tiny">角色</span>
-              <select value={role} onChange={(e) => changeRole(e.target.value)} aria-label="操作角色">
-                {ROLES.map((r) => (
-                  <option key={r} value={r}>{ROLE_LABEL[r]}</option>
-                ))}
-              </select>
-            </label>
+            {meta?.auth?.enabled ? (
+              <span className="tiny mono" title="已启用 Basic Auth，角色由服务端 htpasswd 决定">
+                身份 {meta.auth.user || '—'}
+              </span>
+            ) : (
+              <label className="role-pick">
+                <span className="tiny">角色</span>
+                <select value={role} onChange={(e) => changeRole(e.target.value)} aria-label="操作角色">
+                  {ROLES.map((r) => (
+                    <option key={r} value={r}>{ROLE_LABEL[r]}</option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
         </header>
         <main className="content">{page}</main>

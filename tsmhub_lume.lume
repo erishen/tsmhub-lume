@@ -24,13 +24,20 @@ if (lc_bind == null) { lc_bind = "127.0.0.1"; }
 let lc_port = env("LUME_PORT");
 if (lc_port == null) { lc_port = "8097"; }
 
+// compose 的 ${HTPASSWD_FILE:-} 在未配置时传空串；框架会把 "" 当成「要加载
+// 但打不开」而拒绝启动。空串必须规范成 null（= 不启用认证）。
+let auth_file = env("HTPASSWD_FILE");
+if (auth_file != null) {
+  if (len(str(auth_file)) == 0) { auth_file = null; }
+}
+
 server {
   port = int(lc_port);
   workers = 2;
   bind = str(lc_bind);
   docroot = "./www";
   spa = true;                       // history 路由：GET + 静态 404 → www/index.html
-  htpasswd = env("HTPASSWD_FILE");  // 本地留空 = 无认证；对外部署注入即开 Basic Auth
+  htpasswd = auth_file;             // null = 无认证；注入路径即开 Basic Auth
 };
 
 import "src/api.lume" as api;
@@ -133,10 +140,18 @@ get "/api/health", (req) => {
 };
 
 get "/api/meta", (req) => {
+  // 让前端知道认证是否开启：开启后角色由服务端 htpasswd 决定，
+  // 页面必须隐藏「角色」选择器，避免误导用户以为 ?role= 仍然有效。
+  let hp = env("HTPASSWD_FILE");
+  let auth_on = false;
+  if (hp != null) {
+    if (len(str(hp)) > 0) { auth_on = true; }
+  }
   return {
     service: "tsmhub-lume",
     upstream: api.base(),
     gate: guard.policy(),
+    auth: { enabled: auth_on, user: str(get(req, "user", "")) },
     playground: { client_key: api.client_key_set() },
   };
 };

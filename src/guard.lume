@@ -9,8 +9,10 @@
 //   execute   execute 类需 agent_operator；approve 类仍需 human_admin
 //   approve   所有写操作都需 human_admin
 //
-// 角色由前端在 ?role= 里声明（Lume 的 req 不暴露请求头）。这是流程门禁，
-// 不是身份认证：真正的身份边界由 HTPASSWD_FILE / 反向代理提供。
+// 角色来源分两种：
+//   - 开启 HTPASSWD_FILE：取 htpasswd 行第三列（req.roles，服务端可信），
+//     前端的 ?role= 被忽略；没配角色列则拒绝写操作。
+//   - 未开启认证：取前端 ?role=，这只是流程门禁，不是身份认证。
 
 import "../vendor/lume-core/lib/approval.lume" as approval;
 
@@ -23,6 +25,19 @@ func mode() {
 }
 
 func role_from(req) {
+  // Basic Auth 已通过时，req.user / req.roles 来自服务端 htpasswd（框架在 C 层
+  // 填充，前端无法伪造）：角色只取 htpasswd 行第三列，?role= 一律忽略。
+  // 已认证但没配角色列 → 返回空串让 check() 拒绝（fail closed）。
+  let user = str(get(req, "user", ""));
+  if (len(user) > 0) {
+    let roles = get(req, "roles", []);
+    for (r in roles) {
+      let role = str(r);
+      if (approval.known_role(role)) { return role; }
+    }
+    return "";
+  }
+  // 未开启 Basic Auth（本机/单人开发）：?role= 仍是流程门禁，不是身份认证。
   let qp = get(req, "query_params", null);
   if (qp == null) { return ""; }
   return str(get(qp, "role", ""));

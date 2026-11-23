@@ -130,7 +130,7 @@ make stop        # 停掉 8097 上的服务
 | `TSM_CLIENT_KEY` | 空 | 可选 `sk-tr-…` 客户端 Key，Playground 页面用；留空则该页给出提示 |
 | `TSM_WRITE_GATE` | `off` | 写操作闸门：`off` / `execute` / `approve` |
 | `LUME_BIND` / `LUME_PORT` | `127.0.0.1` / `8097` | 监听地址 |
-| `HTPASSWD_FILE` | 空 | 设置后启用 Basic Auth（对外暴露时必须） |
+| `HTPASSWD_FILE` | 空 | `make auth` 生成账号后设为 `/app/.data/htpasswd`（Docker）/ `.data/htpasswd`（本机）；对外暴露必须 |
 | `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL` / `LLM_TIMEOUT` | 见下文 | lume agent（`/react/api/chat`）的模型上游配置，见「lume agent」一节 |
 
 ## API
@@ -235,8 +235,19 @@ LLM 应用/客户端  --X-Api-Key / Authorization: Bearer: sk-tr-…-->  Lume /v
 角色由前端顶栏选择器放进 `?role=` 查询参数（Lume 的 `req` 不暴露请求头）。这是**流程门禁**，
 不是身份认证——真正的身份边界交给 `HTPASSWD_FILE` 或反向代理。
 
-**生产建议**：通过 `.env` 设 `TSM_WRITE_GATE=execute`（已 gitignore，不随镜像/仓库发布）；
-多用户环境再加 `HTPASSWD_FILE` 做 Basic Auth，身份与流程两层都齐。
+**对外暴露前必须启用 Basic Auth**（全站生效，含 `/react/api/chat`）：
+
+```bash
+make auth     # 交互式生成 .data/htpasswd：bcrypt 哈希 + 第三列角色，权限 600
+# .env 里设 HTPASSWD_FILE=/app/.data/htpasswd（Docker）或 .data/htpasswd（本机 make dev）
+docker compose up -d   # 环境变量变更，无需重建镜像
+```
+
+开启后 `req.user` / `req.roles` 由框架从 htpasswd 填充，**写角色只认第三列**
+（`user:hash:human_admin,agent_operator`），前端 `?role=` 被完全忽略；未配角色列
+的账号登录后仍无法执行任何写操作（fail closed）。顶栏角色选择器会自动隐藏，
+改为显示当前身份。生产同时建议设 `TSM_WRITE_GATE=execute`（`.env` 已 gitignore），
+身份与流程两层都齐；本机 loopback 保持两项目为空即可，用法不变。
 
 ## lume agent（内置 Agent 聊天）
 
@@ -268,8 +279,8 @@ LLM 应用/客户端  --X-Api-Key / Authorization: Bearer: sk-tr-…-->  Lume /v
 - **会话记忆**：前端按 `sess-<hex>` 生成 sessionId，同一 id 服务端重放历史上下文；
   「新会话」按钮换 id 即清空。
 - **安全边界**：端点有同源 + POST-only 校验（`chat_origin_ok`），跨域 POST 403；
-  但它不走 `?role=` 闸门——对外部署务必配 `HTPASSWD_FILE`，成本由 Key 的额度
-  约束兜底。LLM 凭据只在服务端，浏览器不可见。
+  但它不走 `?role=` 闸门——对外部署务必配 `HTPASSWD_FILE`（Basic Auth 全站生效，
+  会一并保护该端点），成本另由 Key 的额度兜底。LLM 凭据只在服务端，浏览器不可见。
 
 | 变量 | 默认（compose） | 说明 |
 | --- | --- | --- |

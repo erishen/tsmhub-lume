@@ -24,6 +24,7 @@ export interface Meta {
     approve_action: string
   }
   playground?: { client_key?: boolean }
+  auth?: { enabled: boolean; user: string }
 }
 
 export interface Overview {

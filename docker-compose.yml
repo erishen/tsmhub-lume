@@ -25,6 +25,9 @@ services:
       # 文件不存在时 admin_secret() 返回空串（上游未开鉴权的情况）。
       TSM_ADMIN_FILE: /app/.data/admin.token
       TSM_CLIENT_KEY: ${TSM_CLIENT_KEY:-}
+      # 对外暴露前：make auth 生成宿主 .data/htpasswd，并在 .env 设为
+      # HTPASSWD_FILE=/app/.data/htpasswd（容器内路径）。留空 = 无认证。
+      HTPASSWD_FILE: ${HTPASSWD_FILE:-}
       # lume agent（/react/api/chat）：OpenAI 兼容上游 = tsm-hub，Key 复用 TSM_CLIENT_KEY。
       # LLM_API_URL 必须是完整的 /v1/chat/completions 端点（C 层直接 POST 这个 URL）；
       # ROUTER_API_URL 单独给目录同步用 base（会拼 /v1/tools、/v1/tools/invoke）。

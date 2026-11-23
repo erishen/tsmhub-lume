@@ -34,10 +34,15 @@ $(LUME_LINUX_TGZ):
 	@echo "$(LUME_LINUX_SHA256)  $@" | \
 	  if command -v sha256sum >/dev/null 2>&1; then sha256sum -c -; else shasum -a 256 -c -; fi
 
-.PHONY: vendor check typecheck ui node_modules test-fe test test-local run dev stop smoke clean logs-clean docker docker-logs docker-down
+.PHONY: vendor auth check typecheck ui node_modules test-fe test test-local run dev stop smoke clean logs-clean docker docker-logs docker-down
 
 vendor:
 	@bash scripts/vendor_lume.sh
+
+# 交互式生成 Basic Auth 账号（bcrypt + 角色列）到 .data/htpasswd；
+# 启用方式见脚本末尾提示，默认不启用（本机 loopback 用法不变）。
+auth:
+	@bash scripts/gen_htpasswd.sh
 
 check: vendor
 	@$(LUME) --check tsmhub_lume.lume

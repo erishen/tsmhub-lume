@@ -30,6 +30,7 @@ import {
   SettingsPage,
   MemoryPage,
   AgentPage,
+  App,
 } from './app'
 import { parseAgentSse, newSessionId } from './agent'
 
@@ -670,6 +671,38 @@ describe('AgentPage', () => {
     fireEvent.click(screen.getByText('新会话'))
     expect(screen.getByText(/开始与 Agent 对话/)).toBeTruthy()
     expect(screen.getByText(/会话 sess-/).textContent).not.toBe(firstSid)
+  })
+})
+
+// ---------- 认证态：顶栏角色来源 ----------
+
+describe('App 认证态', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  function stubTop(enabled: boolean) {
+    return installFetch((url) => {
+      if (baseOf(url) === '/api/meta') return jsonResponse({
+        service: 'tsmhub-lume', upstream: 'http://tsm-hub:9070',
+        gate: { mode: 'execute', chain: [], roles: [], execute_action: 'execute', approve_action: 'approve' },
+        auth: { enabled, user: enabled ? 'probe' : '' },
+      })
+      if (baseOf(url) === '/api/health') return jsonResponse({ ok: true })
+      return jsonResponse({ counts: {}, usage: {}, cost_warnings: [], providers: [], audit: [] })
+    })
+  }
+
+  it('Basic Auth 开启时隐藏角色选择器，显示服务端身份', async () => {
+    stubTop(true)
+    render(<App />)
+    expect(await screen.findByText(/身份/)).toBeTruthy()
+    expect(screen.queryByLabelText('操作角色')).toBeNull()
+  })
+
+  it('未开启认证时保留 ?role= 选择器', async () => {
+    stubTop(false)
+    render(<App />)
+    expect(await screen.findByLabelText('操作角色')).toBeTruthy()
+    expect(screen.queryByText(/身份/)).toBeNull()
   })
 })
 
