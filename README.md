@@ -1,338 +1,259 @@
 # tsmhub-lume
 
-**tsm-hub 的 Lume + React 控制台**：Lume 单进程同时做静态站、SPA 回退和同源 JSON BFF，
-把 [tsm-hub](../tsm-hub)（自制 Key + 智能路由的 LLM 网关）的管理 REST API 包装成一个
-浏览器可直接用的控制台。
+**A Lume + React console for tsm-hub**: a single Lume process serves the static site, SPA fallback, and a same-origin JSON BFF, wrapping the management REST API of [tsm-hub](../tsm-hub) (a home-grown LLM gateway with custom keys and smart routing) into a console that the browser can use directly.
 
-> 定位：这是 tsm-hub 的**第二 Web 层**，不是替换原管理台。tsm-hub 原生用 Go `embed` 托管
-> Angular 控制台，浏览器直接打 `/api/admin/*`（要自己带 `X-Admin-Token`）。这里换成
-> **Lume 托管 + 服务端注入口令**：浏览器只与 Lume 同源通信，管理口令和 `sk-tr-` 客户端 Key
-> 都留在 Lume 进程里，不落到 `localStorage` 或页面源码。
+> Positioning: this is tsm-hub's **second web layer**, not a replacement for the original admin console. tsm-hub natively hosts an Angular console via Go `embed`, where the browser calls `/api/admin/*` directly (supplying its own `X-Admin-Token`). Here we switch to **Lume hosting + server-side credential injection**: the browser communicates only with Lume over same-origin requests; the admin password and `sk-tr-` client key stay inside the Lume process and never land in `localStorage` or the page source.
 
-## 架构
+[中文文档](README.zh.md)
+
+## Architecture
 
 ```
-浏览器 (React SPA, 不持口令)
-   │   同源 GET /app.js + /api/*
+Browser (React SPA, holds no credentials)
+   │   same-origin GET /app.js + /api/*
    ▼
 ┌────────────────────────────────────────────────┐
-│  Lume 单进程  tsmhub_lume.lume                  │
-│  ├─ server{}  docroot=./www  spa=true 回退      │
-│  ├─ 路由  GET/POST/DELETE/PATCH  /api/*         │
-│  │     └─ guard.check(execute|approve) 审批闸门  │
-│  └─ src/api.lume  上游客户端                     │
-│        X-Admin-Token / Bearer sk-tr-  服务端注入 │
+│  Lume single process  tsmhub_lume.lume          │
+│  ├─ server{}  docroot=./www  spa=true fallback  │
+│  ├─ routes  GET/POST/DELETE/PATCH  /api/*       │
+│  │     └─ guard.check(execute|approve) gate     │
+│  └─ src/api.lume  upstream client               │
+│        X-Admin-Token / Bearer sk-tr-  injected  │
 └────────────────────┬───────────────────────────┘
-                     │  http://tsm-hub:9070（docker 网络）
+                     │  http://tsm-hub:9070 (docker network)
                      ▼
-            tsm-hub 管理面 /api/admin/*
-            （Go 网关：Key + 智能路由 + 能力池 + 审计）
+            tsm-hub admin plane /api/admin/*
+            (Go gateway: keys + smart routing + capability pool + audit)
 ```
 
-- **口令边界**：`X-Admin-Token`（`TSM_ADMIN`/`TSM_ADMIN_FILE`）与 `sk-tr-` 客户端 Key
-  （`TSM_CLIENT_KEY`）只在 `src/api.lume` 里读取，浏览器永远接触不到。
-- **写操作**：路由层先过 `guard.check`（lume-core 审批闸门，按 `?role=` 走
-  execute/approve 链），通过才 `api.proxy` 转发；读操作直接透传。
+- **Credential boundary**: `X-Admin-Token` (`TSM_ADMIN`/`TSM_ADMIN_FILE`) and the `sk-tr-` client key (`TSM_CLIENT_KEY`) are read only in `src/api.lume` and are never accessible to the browser.
+- **Write operations**: routes first pass `guard.check` (the lume-core approval gate, following the execute/approve chain via `?role=`); only then does `api.proxy` forward them. Read operations pass straight through.
 
-## 技术栈
+## Tech stack
 
-| 组件 | 角色 |
+| Component | Role |
 | --- | --- |
-| **lume**（framework 二进制） | HTTP 服务：`server{}` + 路由 + SPA 回退 + 出站 `http_*` 代理 |
-| **lume-core** | `vendor/lume-core/lib/approval.lume` —— 写操作审批闸门（职责分离模型） |
-| **React 18 + TypeScript** | 控制台 SPA，esbuild 打包成 `www/app.js`，由 Lume docroot 直接伺服 |
+| **lume** (framework binary) | HTTP server: `server{}` + routes + SPA fallback + outbound `http_*` proxying |
+| **lume-core** | `vendor/lume-core/lib/approval.lume` — write-operation approval gate (separation-of-duties model) |
+| **React 18 + TypeScript** | Console SPA, bundled by esbuild into `www/app.js` and served directly by the Lume docroot |
 
-## 目录
+## Layout
 
 ```
-tsmhub_lume.lume           Lume 入口：server{} + 全部路由（BFF）
-src/api.lume              tsm-hub 上游客户端 + 首屏聚合（服务端持有管理口令）
-src/guard.lume            写操作闸门（lume-core/lib/approval.lume）
-src/web/api.ts            前端 API 客户端（同源，无 Token）
-src/web/app.tsx           React 控制台外壳（路由 + 布局 + 错误边界）
-src/web/pages/            15 个页面（总览/Providers/余额/路由/Keys/用量/模型/推荐/监控/审计/记忆/能力池/Agent/测试/设置）
-src/web/components.tsx    通用展示组件；src/web/utils.ts 纯工具；src/web/hooks.ts 数据/操作钩子
-www/                      docroot：index.html + app.css + 构建产物 app.js
-scripts/vendor_lume.sh    同步 lume 二进制与 lume-core/lib 到 vendor/
-scripts/smoke.sh          只读 HTTP 冒烟
-vendor/lume-core/lib/      lume-core 共享模块（入库，带版本戳）
+tsmhub_lume.lume           Lume entry: server{} + all routes (BFF)
+src/api.lume              tsm-hub upstream client + first-paint aggregation (holds the admin credential server-side)
+src/guard.lume            write gate (lume-core/lib/approval.lume)
+src/web/api.ts            frontend API client (same-origin, no token)
+src/web/app.tsx           React console shell (routing + layout + error boundary)
+src/web/pages/            15 pages (overview / providers / balances / routes / keys / usage / models /
+                          recommendations / observability / audit / memory / capabilities / agent / test / settings)
+src/web/components.tsx    shared display components; src/web/utils.ts pure helpers; src/web/hooks.ts data/action hooks
+www/                      docroot: index.html + app.css + built app.js
+scripts/vendor_lume.sh    sync the lume binary and lume-core/lib into vendor/
+scripts/smoke.sh          read-only HTTP smoke test
+vendor/lume-core/lib/     lume-core shared modules (committed, with a version stamp)
 ```
 
-## 快速开始
+## Quick start
 
-前置：tsm-hub 已在本机运行（默认 `127.0.0.1:9070`），Node 18+，Lume 本地 checkout 在
-`work/lume/`（缺失时脚本自动从 GitHub release 拉取）。
+Prerequisites: tsm-hub already running locally (default `127.0.0.1:9070`), Node 18+, and a local lume checkout at `work/lume/` (the script fetches from the GitHub release when it is missing).
 
 ```bash
 cd work/golang/tsmhub-lume
 
-# 1) 同步 lume 二进制 + lume-core/lib
+# 1) Sync the lume binary + lume-core/lib
 make vendor
 
-# 2) 启动（自动做 lume --check + tsc + esbuild 打包，然后前台起 Lume）
-TSM_ADMIN='<tsm-hub 的 admin_token>' make dev
+# 2) Start (automatically runs lume --check + tsc + esbuild bundling, then Lume in the foreground)
+TSM_ADMIN='<tsm-hub admin_token>' make dev
 #    → http://127.0.0.1:8097
 ```
 
-也可以把口令放文件里（更适合生产，不出现在进程环境里）：
+You can also put the credential in a file (better for production — it won't appear in the process environment):
 
 ```bash
 mkdir -p .data
-printf '%s' '<tsm-hub 的 admin_token>' > .data/admin.token
+printf '%s' '<tsm-hub admin_token>' > .data/admin.token
 TSM_ADMIN_FILE=.data/admin.token make dev
 ```
 
-构建 / 校验 / 测试：
+Build / check / test:
 
 ```bash
-make test        # 静态门禁：lume --check + tsc + esbuild + vitest（无需运行环境）
-make test-fe     # 仅前端单测（vitest，jsdom）
-make test-local  # 静态门禁 + 起临时实例做自包含冒烟，测完自动清理（不依赖上游）
-make check       # lume --check：语法 + 类型
+make test        # static gate: lume --check + tsc + esbuild + vitest (no runtime required)
+make test-fe     # frontend unit tests only (vitest, jsdom)
+make test-local  # static gate + a self-contained smoke test on a temporary instance, cleaned up afterwards (no upstream required)
+make check       # lume --check: syntax + types
 make typecheck   # tsc --noEmit
 make ui          # esbuild → www/app.js
-make smoke       # 对运行中的服务做一次只读冒烟（默认含上游端点，可加 --no-upstream）
-make logs-clean  # 截断 logs/access.log（长期运行会增长，默认安全：0600/不记 query string）
-make stop        # 停掉 8097 上的服务
+make smoke       # one read-only smoke pass against a running service (includes upstream endpoints by default; add --no-upstream)
+make logs-clean  # truncate logs/access.log (it grows during long runs; safe defaults: 0600 / no query strings)
+make stop        # stop the service on port 8097
 ```
 
-`make dev` 现在以 `test` 为前置，启动前自动跑完整静态门禁（含前端单测）。
+`make dev` now depends on `test`, so the full static gate (including frontend unit tests) runs before startup.
 
-### 前端单测
+### Frontend unit tests
 
-`src/web/app.test.tsx` 用 vitest + jsdom + @testing-library/react 覆盖：取值/格式化/状态
-样式的纯函数、路由与角色持久化、`Badge`/`Stat`/`Table`/`Panel` 组件、`ErrorBoundary`
-（捕获子组件渲染异常并显示可重试错误卡，防整页白屏）。入口 `src/web/main.tsx`
-负责挂载，`app.tsx` 无副作用，可被测试直接导入。
+`src/web/app.test.tsx` uses vitest + jsdom + @testing-library/react to cover: pure functions for value retrieval/formatting and status styling, routing and role persistence, the `Badge`/`Stat`/`Table`/`Panel` components, and `ErrorBoundary` (catches child render errors and shows a retryable error card instead of a blank page). The entry point `src/web/main.tsx` handles mounting; `app.tsx` has no side effects and can be imported directly by tests.
 
 ## CI
 
-`.github/workflows/ci.yml` 在 push 到 `main` 或任意 PR 上跑两个 job：
+`.github/workflows/ci.yml` runs two jobs on pushes to `main` and on any PR:
 
-1. `test`：`make vendor`（release 拉 lume + lume-core）→ `make test`（lume --check +
-   tsc + esbuild）→ `make test-local`（临时实例自包含冒烟，测完清理）。
-2. `docker`：`docker build`（lume-bin 阶段也从 release 下载）→ 起容器冒烟 BFF 自身端点。
+1. `test`: `make vendor` (fetch lume + lume-core from the release) → `make test` (lume --check + tsc + esbuild) → `make test-local` (self-contained smoke test on a temporary instance, cleaned up afterwards).
+2. `docker`: `docker build` (the lume-bin stage also downloads from the release) → start a container and smoke-test the BFF's own endpoints.
 
-两个 job 都**不依赖上游 tsm-hub、不依赖本地镜像或兄弟 checkout**，clone 后即可绿。
+Neither job depends on an upstream tsm-hub, local images, or a sibling checkout — a fresh clone goes green.
 
-> ⚠️ 变量名是 `TSM_ADMIN`，**不是** `TSM_ADMIN_TOKEN`：Lume 的 `env()` 会对名字里含
-> `TOKEN` / `SECRET` / `API_KEY` / `PASSWORD` / `CREDENTIAL` 的变量返回 `null`
-> （防机密被脚本读走）。直接叫 `TSM_ADMIN_TOKEN` 在这里恒为 null。
-> `TSM_CLIENT_KEY` 同理（Playground 用），名字里只有 `KEY`、没有 `API_KEY`。
+> ⚠️ The variable is `TSM_ADMIN`, **not** `TSM_ADMIN_TOKEN`: Lume's `env()` returns `null` for names containing `TOKEN` / `SECRET` / `API_KEY` / `PASSWORD` / `CREDENTIAL` (to prevent scripts from reading secrets). Naming it `TSM_ADMIN_TOKEN` would make it permanently null here. The same applies to `TSM_CLIENT_KEY` (used by the Playground) — its name contains only `KEY`, not `API_KEY`.
 
-## 环境变量
+## Environment variables
 
-| 变量 | 默认 | 说明 |
+| Variable | Default | Description |
 | --- | --- | --- |
-| `TSM_BASE` | `http://127.0.0.1:9070` | tsm-hub 上游地址（回环/私网，`http_*` 显式 `allow_private`） |
-| `TSM_ADMIN` | 空 | tsm-hub 管理口令，只在 Lume 进程内使用，注入 `X-Admin-Token` |
-| `TSM_ADMIN_FILE` | 空 | 从文件读口令，优先于 `TSM_ADMIN`；末尾换行会被裁掉 |
-| `TSM_CLIENT_KEY` | 空 | 可选 `sk-tr-…` 客户端 Key，Playground 页面用；留空则该页给出提示 |
-| `TSM_WRITE_GATE` | `off` | 写操作闸门：`off` / `execute` / `approve` |
-| `LUME_BIND` / `LUME_PORT` | `127.0.0.1` / `8097` | 监听地址 |
-| `HTPASSWD_FILE` | 空 | `make auth` 生成账号后设为 `/app/.data/htpasswd`（Docker）/ `.data/htpasswd`（本机）；对外暴露必须 |
-| `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL` / `LLM_TIMEOUT` | 见下文 | lume agent（`/react/api/chat`）的模型上游配置，见「lume agent」一节 |
+| `TSM_BASE` | `http://127.0.0.1:9070` | tsm-hub upstream address (loopback/private network; `http_*` uses explicit `allow_private`) |
+| `TSM_ADMIN` | empty | tsm-hub admin credential, used only inside the Lume process, injected as `X-Admin-Token` |
+| `TSM_ADMIN_FILE` | empty | read the credential from a file, takes precedence over `TSM_ADMIN`; trailing newline is trimmed |
+| `TSM_CLIENT_KEY` | empty | optional `sk-tr-…` client key for the Playground page; when empty the page shows a hint |
+| `TSM_WRITE_GATE` | `off` | write gate: `off` / `execute` / `approve` |
+| `LUME_BIND` / `LUME_PORT` | `127.0.0.1` / `8097` | listen address |
+| `HTPASSWD_FILE` | empty | after `make auth` generates accounts, set to `/app/.data/htpasswd` (Docker) / `.data/htpasswd` (local); required for external exposure |
+| `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL` / `LLM_TIMEOUT` | see below | model upstream settings for the lume agent (`/react/api/chat`), see the "lume agent" section |
 
 ## API
 
-全部同源，浏览器无需任何 Token。BFF 对上游不可达统一返回 `502 { ok:false, error }`，
-前端显示可重试的错误条。
+All endpoints are same-origin; the browser needs no token. When the upstream is unreachable, the BFF uniformly returns `502 { ok:false, error }` and the frontend displays a retryable error bar.
 
-| 端点 | 说明 |
+| Endpoint | Description |
 | --- | --- |
-| `GET /api/health` | 本服务 + 上游健康检查（`/healthz` 与 `/api/admin/health`） |
-| `GET /api/meta` | 上游地址 + 写操作闸门策略 |
-| `GET /api/overview` | 首屏聚合：计数 / 今日&累计用量 / 额度告警 / Provider 健康 / 最近审计 |
-| `GET /api/providers` | Provider 列表 |
-| `POST /api/providers` | 新增/更新 Provider（execute） |
-| `POST /api/providers/probe` | 探测模型（execute） |
-| `DELETE /api/providers/:id` | 删除 Provider（approve） |
-| `GET /api/routes` / `POST /api/routes` / `DELETE /api/routes/:model` | 路由表增删改 |
-| `GET /api/keys` / `POST /api/keys` / `DELETE /api/keys/:id` | Key 列表/签发/删除 |
-| `PATCH /api/keys/:id` | 更新 Key（名称/模型/额度，execute） |
-| `POST /api/keys/:id/toggle` | 启停 Key（execute） |
-| `GET /api/keys/:id/plaintext` | 查看 Key 明文（approve；创建后 2 分钟内可看一次） |
-| `GET /api/usage` | 用量（`?days=`） |
-| `POST /api/usage/clear` | 清空用量（approve） |
-| `GET /api/observability` | 监控概览 |
-| `GET /api/audit-logs` | 审计日志（`?limit=`） |
-| `GET /api/balances` | Provider 余额（上游串行探测，可能较慢） |
-| `GET /api/models` / `/api/models/recommendations` | 模型目录 / 推荐 |
-| `POST /api/models/refresh` | 刷新模型目录（execute） |
-| `GET /api/memory` / `DELETE /api/memory` | 会话记忆读取 / 清空（approve） |
-| `GET /api/tools` / `/api/skills` / `/api/mcps` / `/api/fastpath` | 能力池 |
-| `POST /api/tools/invoke` | 调用工具（execute） |
-| `GET /api/skills/:name` | 技能详情 |
-| `POST /api/mcps/:name` / `DELETE /api/mcps/:name` | 新增/删除 MCP（execute） |
-| `POST /api/fastpath/:name/promote` / `DELETE /api/fastpath/:name` | 提升/删除 fastpath（approve） |
-| `POST /api/fastpath/generate` | 生成 fastpath（approve） |
-| `GET /api/external-tools` / `POST /api/external-tools/:name/adopt` / `DELETE /api/external-tools/:name` | 外部工具 候选/采纳/忽略（approve） |
-| `GET /api/external-skills/candidates` | 外部技能候选 |
-| `GET /api/external-mcps/candidates` / `POST /api/external-mcps/suggest` / `POST /api/external-mcps/:server/adopt` / `DELETE /api/external-mcps/:server` | 外部 MCP 候选/建议/采纳/忽略（approve） |
-| `GET /api/a2a/overview` / `/api/a2a/tasks` | A2A 概览 / 任务 |
-| `POST /api/a2a/invoke` | A2A 调用能力（execute） |
-| `GET /api/sandbox/status` / `/api/platforms` | 沙箱 / 上游平台 |
-| `GET /api/settings` / `POST /api/settings` | 全局设置读取 / 更新（approve） |
-| `POST /api/chat` | Playground：经服务端注入 `sk-tr-` Key 打 `/v1/chat/completions` |
-| `GET/POST /v1/*` | **token 转发服务**：LLM 客户端 API，`X-Api-Key` 透传到上游 `/v1/*` |
+| `GET /api/health` | health check for this service + the upstream (`/healthz` and `/api/admin/health`) |
+| `GET /api/meta` | upstream address + write-gate policy |
+| `GET /api/overview` | first-paint aggregation: counts / today & cumulative usage / quota alerts / provider health / recent audit |
+| `GET /api/providers` | provider list |
+| `POST /api/providers` | add/update a provider (execute) |
+| `POST /api/providers/probe` | probe a model (execute) |
+| `DELETE /api/providers/:id` | delete a provider (approve) |
+| `GET /api/routes` / `POST /api/routes` / `DELETE /api/routes/:model` | route table CRUD |
+| `GET /api/keys` / `POST /api/keys` / `DELETE /api/keys/:id` | key list / issue / delete |
+| `PATCH /api/keys/:id` | update a key (name/model/quota, execute) |
+| `POST /api/keys/:id/toggle` | enable/disable a key (execute) |
+| `GET /api/keys/:id/plaintext` | view key plaintext (approve; viewable once within 2 minutes of creation) |
+| `GET /api/usage` | usage (`?days=`) |
+| `POST /api/usage/clear` | clear usage (approve) |
+| `GET /api/observability` | monitoring overview |
+| `GET /api/audit-logs` | audit log (`?limit=`) |
+| `GET /api/balances` | provider balances (upstream probes run serially, may be slow) |
+| `GET /api/models` / `/api/models/recommendations` | model catalog / recommendations |
+| `POST /api/models/refresh` | refresh the model catalog (execute) |
+| `GET /api/memory` / `DELETE /api/memory` | session memory read / clear (approve) |
+| `GET /api/tools` / `/api/skills` / `/api/mcps` / `/api/fastpath` | capability pool |
+| `POST /api/tools/invoke` | invoke a tool (execute) |
+| `GET /api/skills/:name` | skill details |
+| `POST /api/mcps/:name` / `DELETE /api/mcps/:name` | add/delete an MCP (execute) |
+| `POST /api/fastpath/:name/promote` / `DELETE /api/fastpath/:name` | promote/delete a fastpath (approve) |
+| `POST /api/fastpath/generate` | generate a fastpath (approve) |
+| `GET /api/external-tools` / `POST /api/external-tools/:name/adopt` / `DELETE /api/external-tools/:name` | external-tool candidates / adopt / ignore (approve) |
+| `GET /api/external-skills/candidates` | external skill candidates |
+| `GET /api/external-mcps/candidates` / `POST /api/external-mcps/suggest` / `POST /api/external-mcps/:server/adopt` / `DELETE /api/external-mcps/:server` | external-MCP candidates / suggest / adopt / ignore (approve) |
+| `GET /api/a2a/overview` / `/api/a2a/tasks` | A2A overview / tasks |
+| `POST /api/a2a/invoke` | invoke an A2A capability (execute) |
+| `GET /api/sandbox/status` / `/api/platforms` | sandbox / upstream platforms |
+| `GET /api/settings` / `POST /api/settings` | global settings read / update (approve) |
+| `POST /api/chat` | Playground: calls `/v1/chat/completions` with a server-injected `sk-tr-` key |
+| `GET/POST /v1/*` | **token pass-through service**: LLM client API, `X-Api-Key` forwarded to upstream `/v1/*` |
 
-## token 转发服务（`/v1/*`）
+## Token pass-through service (`/v1/*`)
 
-Lume 同时是 tsm-hub 的 **LLM 客户端入口**：客户端用自己的 `sk-tr-` Key 直连
-Lume `/v1/*`，Lume 把请求原样转发到上游（Key 鉴权 + 智能路由 + 转发都由上游做）。
+Lume also acts as tsm-hub's **LLM client entry point**: clients connect directly to Lume `/v1/*` with their own `sk-tr-` key, and Lume forwards the request verbatim to the upstream (key auth, smart routing, and proxying are all handled there).
 
 ```
-LLM 应用/客户端  --X-Api-Key / Authorization: Bearer: sk-tr-…-->  Lume /v1/*  --透传-->  tsm-hub /v1/*
+LLM app/client  --X-Api-Key / Authorization: Bearer: sk-tr-…-->  Lume /v1/*  --pass-through-->  tsm-hub /v1/*
 ```
 
-| 项 | 说明 |
+| Item | Description |
 | --- | --- |
-| 鉴权 | 在上游做。Lume 只透传客户端 Key（`X-Api-Key` / `?api_key=` / `Authorization: Bearer` 三选一）；客户端未带 Key 时**回退服务端 `TSM_CLIENT_KEY`**（见下行），两者都没有才由上游返回 401 `missing_key` |
-| 端点 | 整个 `/v1/*` 空间透传：`chat/completions`、`models`、`tools`、`tools/invoke`、`skills`、`mcps` |
-| 与管理面隔离 | `/v1/*` 不走 `?role=` 闸门——这是客户端 API；管理面 `/api/*` 才走闸门 |
-| Key 来源 | 客户端 `X-Api-Key` / `Authorization: Bearer` 头 → 未带则 `?api_key=` → 未带则回退服务端 `TSM_CLIENT_KEY` |
-| 路径边界 | `/v1/*` 只接受 `/v1/` 前缀且无 `..` 路径段；Lume 在路由前规范化路径（`/v1/../api/keys` → `/api/keys`，落到管理路由含闸门），`client_path_ok` 再拦一次作防御纵深 |
+| Auth | Performed upstream. Lume only forwards the client key (one of `X-Api-Key` / `?api_key=` / `Authorization: Bearer`); when the client sends no key it **falls back to the server-side `TSM_CLIENT_KEY`** (see next row), and only when both are absent does the upstream return 401 `missing_key` |
+| Endpoints | The whole `/v1/*` space is passed through: `chat/completions`, `models`, `tools`, `tools/invoke`, `skills`, `mcps` |
+| Isolated from the admin plane | `/v1/*` does not use the `?role=` gate — it is a client API; only the admin plane `/api/*` uses the gate |
+| Key source | client `X-Api-Key` / `Authorization: Bearer` header → then `?api_key=` → then fall back to server-side `TSM_CLIENT_KEY` |
+| Path boundary | `/v1/*` accepts only the `/v1/` prefix with no `..` segment; Lume normalizes paths before routing (`/v1/../api/keys` → `/api/keys`, landing on a gated admin route), and `client_path_ok` checks again as defense in depth |
 
-> ✅ **三种方式都接受**：`X-Api-Key`、`?api_key=`、**`Authorization: Bearer`**（Lume 把
-> 完整 `Authorization` 暴露在 `req.authorization`，见 `lang/bridge.c`；OpenAI 兼容客户端
-> 与 lume agent 用标准 Bearer 头即可）。三种都归一为上游认的 `Authorization: Bearer`。
+> ✅ **All three forms are accepted**: `X-Api-Key`, `?api_key=`, and **`Authorization: Bearer`** (Lume exposes the full `Authorization` as `req.authorization`, see `lang/bridge.c`; OpenAI-compatible clients and the lume agent can simply use a standard Bearer header). All three are normalized to the `Authorization: Bearer` the upstream expects.
 
-> ⚠️ **Basic Auth 是全站生效的**：`HTPASSWD_FILE` 一旦配置，Lume 在 C 层对所有路径
-> （含 `/v1/*`）先做 Basic Auth，之后才轮到上层的 Key 透传。所以对外启用鉴权后，
-> OpenAI 兼容客户端除了带自己的 `sk-tr-` Key，还必须在同一请求上带 Basic Auth 凭据
-> （或用反向代理把 `/v1/*` 单独暴露到不启用 htpasswd 的入口）。本机 `127.0.0.1`
-> 监听且不开 Basic Auth 时不存在此问题。
+> ⚠️ **Basic Auth is site-wide**: once `HTPASSWD_FILE` is configured, Lume performs Basic Auth at the C layer on every path (including `/v1/*`) before the upper-layer key pass-through runs. So after enabling auth for external exposure, OpenAI-compatible clients must send Basic Auth credentials on the same request in addition to their own `sk-tr-` key (or use a reverse proxy to expose `/v1/*` through an entry without htpasswd). This is not an issue when listening only on local `127.0.0.1` with Basic Auth disabled.
 
-> ✅ **流式（lume ≥ v0.14.1）**：`/v1/*` 用 `proxy_stream` 信封——Lume 连上游、
-> **读一块写一块**（真流式，不缓冲整响应）。`stream:true` 的 SSE 逐块到达
-> （首字节更快、内存 O(块)），OpenAI 客户端按正常 event-stream 消费。
-> Docker 用 v0.14.2（release 下载），本地 vendor 工作树同版，行为一致。
-> 早于 v0.14.1 的 lume 无 `proxy_stream` 信封，`/v1/*` 回退为非流式（等完整
-> 响应一次性返回，功能可用但非 token 级）；长生成靠 `timeout: 300s` 兜底。
+> ✅ **Streaming (lume ≥ v0.14.1)**: `/v1/*` uses the `proxy_stream` envelope — Lume connects to the upstream and **writes each chunk as it reads it** (true streaming, no full-response buffering). `stream:true` SSE arrives chunk by chunk (faster first byte, O(chunk) memory), and OpenAI clients consume it as a normal event stream.
+> Docker uses v0.14.2 (downloaded from the release), and the local vendor worktree is the same version, so behavior matches.
+> Lume versions earlier than v0.14.1 lack the `proxy_stream` envelope, so `/v1/*` falls back to non-streaming (it waits for the full response and returns it at once — functional but not token-level); long generations are covered by `timeout: 300s`.
 >
-> ✅ **浮点精度（lume v0.14.2）**：lume `stringify`/`str()`/`print()` 用
-> `lume_fmt_double`（最短 round-trip，对齐 Go json）——`cost_usd`/`error_rate`
-> 不再被 `%g` 截断。管理面 `/api/*` 的 `proxy` 还**原样透传**上游 JSON 文本
-> （不重序列化），聚合端点 `/api/overview` 也精度完整，与上游一致。
+> ✅ **Float precision (lume v0.14.2)**: lume's `stringify`/`str()`/`print()` use `lume_fmt_double` (shortest round-trip, aligned with Go's json), so `cost_usd`/`error_rate` are no longer truncated by `%g`. The admin plane's `/api/*` `proxy` also **passes the upstream JSON text through verbatim** (no re-serialization), and the aggregation endpoint `/api/overview` keeps full precision, matching the upstream.
 
-## 写操作闸门（lume-core）
+## Write gate (lume-core)
 
-`src/guard.lume` import `vendor/lume-core/lib/approval.lume`，用它的**职责分离（SoD）**模型。
-动作是**互斥的**（不是等级包含）：执行者没有审批权，终审者不直接执行。
+`src/guard.lume` imports `vendor/lume-core/lib/approval.lume` and uses its **separation-of-duties (SoD)** model. Actions are **mutually exclusive** (not a hierarchy): an executor cannot approve, and a final approver does not execute directly.
 
-| 角色 | 可执行的动作 |
+| Role | Actions allowed |
 | --- | --- |
-| `agent_operator` | `execute`（改 Provider / 路由 / Key、调用工具、探测、刷新） |
-| `agent_reviewer` | `review_first`（一审） |
-| `agent_reviewer_second` | `review_second`（二审） |
-| `human_admin` | `approve`（删除、清空、改全局设置）、`override`、`audit` |
+| `agent_operator` | `execute` (change providers / routes / keys, invoke tools, probe, refresh) |
+| `agent_reviewer` | `review_first` (first review) |
+| `agent_reviewer_second` | `review_second` (second review) |
+| `human_admin` | `approve` (delete, clear, change global settings), `override`, `audit` |
 
-| 模式 | 行为 |
+| Mode | Behavior |
 | --- | --- |
-| `off`（默认） | 不校验，单人开发 |
-| `execute` | 可逆写操作（execute）需 `agent_operator`；不可逆操作（approve）需 `human_admin` |
-| `approve` | 所有写操作都需 `human_admin` |
+| `off` (default) | no checks, for solo development |
+| `execute` | reversible writes (execute) require `agent_operator`; irreversible ones (approve) require `human_admin` |
+| `approve` | all writes require `human_admin` |
 
-> ⚠️ **SoD 互斥**：`human_admin` **没有** `execute`——终审者不绕过流程直接执行。所以
-> `execute` 模式下，常规写（改 Provider/Key、调用工具、刷新）必须用 `agent_operator`，
-> 不可逆写（删/清空/改设置）必须用 `human_admin`，由前端顶栏角色选择器切换。
-> 对**多角色团队**这是正确分工；单管理员控制台可保持 `off` 或用 `approve` 模式。
+> ⚠️ **SoD is exclusive**: `human_admin` does **not** have `execute` — a final approver does not bypass the flow and execute directly. So in `execute` mode, routine writes (change provider/key, invoke a tool, refresh) must use `agent_operator`, while irreversible writes (delete/clear/change settings) must use `human_admin`, switched via the role selector in the top bar. This is the correct split for **multi-role teams**; a single-admin console can stay `off` or use `approve` mode.
 
-角色由前端顶栏选择器放进 `?role=` 查询参数（Lume 的 `req` 不暴露请求头）。这是**流程门禁**，
-不是身份认证——真正的身份边界交给 `HTPASSWD_FILE` 或反向代理。
+Roles are placed into the `?role=` query parameter by the top-bar selector (Lume's `req` does not expose headers). This is a **flow gate**, not authentication — the real identity boundary is `HTPASSWD_FILE` or a reverse proxy.
 
-**对外暴露前必须启用 Basic Auth**（全站生效，含 `/react/api/chat`）：
+**Basic Auth must be enabled before external exposure** (site-wide, including `/react/api/chat`):
 
 ```bash
-make auth     # 交互式生成 .data/htpasswd：bcrypt 哈希 + 第三列角色，权限 600
-# .env 里设 HTPASSWD_FILE=/app/.data/htpasswd（Docker）或 .data/htpasswd（本机 make dev）
-docker compose up -d   # 环境变量变更，无需重建镜像
+make auth     # interactively generate .data/htpasswd: bcrypt hash + role in the third column, mode 600
+# in .env set HTPASSWD_FILE=/app/.data/htpasswd (Docker) or .data/htpasswd (local make dev)
+docker compose up -d   # env change only, no image rebuild needed
 ```
 
-> 🛡️ **启动安全守卫**：`make run` / `make dev` / `make docker` 启动前会跑
-> `scripts/guard_expose.sh`——检测到**对外可达却没配 Basic Auth** 时直接拒绝启动：
-> 本机模式看 `LUME_BIND` 是否非回环，docker 模式看 compose 端口映射的宿主侧地址。
-> 容器内 `LUME_BIND=0.0.0.0` 是端口映射必需、不算对外，真正边界是宿主映射的
-> `127.0.0.1`。受控内网 + 外部反代鉴权等场景可显式设 `EXPOSE_GUARD=off` 豁免。
+> 🛡️ **Startup safety guard**: `make run` / `make dev` / `make docker` run `scripts/guard_expose.sh` before starting — it refuses to start when the service is **externally reachable without Basic Auth**: local mode checks whether `LUME_BIND` is non-loopback; docker mode checks the host side of the compose port mapping. `LUME_BIND=0.0.0.0` inside the container is required for port mapping and does not count as external — the real boundary is the host-side `127.0.0.1` mapping. For a controlled internal network or external reverse-proxy auth, set `EXPOSE_GUARD=off` to opt out explicitly.
 
-开启后 `req.user` / `req.roles` 由框架从 htpasswd 填充，**写角色只认第三列**
-（`user:hash:human_admin,agent_operator`），前端 `?role=` 被完全忽略；未配角色列
-的账号登录后仍无法执行任何写操作（fail closed）。顶栏角色选择器会自动隐藏，
-改为显示当前身份。生产同时建议设 `TSM_WRITE_GATE=execute`（`.env` 已 gitignore），
-身份与流程两层都齐；本机 loopback 保持两项目为空即可，用法不变。
+Once enabled, `req.user` / `req.roles` are filled by the framework from htpasswd, and **write roles come only from the third column** (`user:hash:human_admin,agent_operator`); the frontend's `?role=` is fully ignored; accounts without a role column still cannot perform any write operation (fail closed). The top-bar role selector hides automatically and shows the current identity instead. For production also set `TSM_WRITE_GATE=execute` (`.env` is gitignored) so both the identity and flow layers are in place; on local loopback it is fine to leave both empty.
 
-## lume agent（内置 Agent 聊天）
+## lume agent (built-in Agent chat)
 
-控制台「Agent」页接的是 **lume 框架原生的 agent 栈**（agent-httpd 静态链进 lume
-二进制）：`POST /react/api/chat`，同源 SSE（note / delta / error / done 信封）。
-该端点由框架层在路由分发前拦截，Lume 脚本层无需（也无法）注册它。
+The console's "Agent" page connects to the **native agent stack of the lume framework** (agent-httpd statically linked into the lume binary): `POST /react/api/chat`, same-origin SSE (note / delta / error / done envelopes). The framework intercepts this endpoint before route dispatch, so the Lume script layer neither needs nor can register it.
 
-- **模型上游**：`LLM_API_URL`（OpenAI 兼容，**必须写完整的 `/v1/chat/completions`
-  端点**——agent C 层直接 POST 这个 URL，不追加路径）+ `LLM_API_KEY` + `LLM_MODEL`
-  + `LLM_TIMEOUT`。Docker 里默认 `http://tsm-hub:9070/v1/chat/completions`，
-  Key 复用 `TSM_CLIENT_KEY`（compose 里映射为 `LLM_API_KEY`）；本地 `make dev`
-  时写进项目根 `.env`（lume 从运行目录读取）。**`LLM_API_KEY` 留空 = 内置离线
-  演示引擎**，可离线开发/测试，不花钱。容器运行时需要 `curl`（agent fork 它打上游），
-  镜像里已装。
-- **控制台只读工具**：`tsmhub_lume.lume` 注册了 5 个只读 tool（overview / usage /
-  routes / keys / provider_health），agent 的 ReAct 循环可直接调用，回答「多少
-  key、今天花了多少」这类控制台问题；**不拥有任何写权限**——写操作仍走
-  `/api/*` 的 `?role=` 闸门路由。
-- **router 目录同步**：`ROUTER_API_URL`（默认复用 `LLM_API_URL`）指向 tsm-hub 的
-  **base**（compose 里显式设为 `http://tsm-hub:9070/v1`，会拼 `/v1/tools` 等后缀），
-  启动时把上游 `GET /v1/tools` 目录同步为代理工具（调用时转发
-  `POST /v1/tools/invoke`），skills/MCP 一并挂载；与本地内建/脚本工具同名时
-  本地实现优先。注意它**不能**和 `LLM_API_URL`（完整 chat 端点）写成同一个值。
-- **模型选择**：Agent 页有模型下拉，选项实时取自 `GET /api/routes` 的路由名
-  （即 tsm-hub 控制台配置的那些），空 model 的默认路由不列出。默认 `auto`
-  不传 `model` 字段；选中后请求体带 `model`，由 tsm-hub 按路由表选 provider
-  并 failover。服务端可选 `LLM_ALLOWED_MODELS`（逗号分隔）限制可覆盖的模型名，
-  留空则不限制、由上游裁决——路由表增删后无需改这里。
-- **会话记忆与历史**：前端按 `sess-<hex>` 生成 sessionId，同一 id 服务端重放历史上下文；
-  「新会话」按钮换 id 即清空。每轮结束后对话自动存入浏览器 localStorage（最多 20 条），
-  工具栏「历史会话」下拉可切换/删除，刷新或重开标签页都能找回——存档只在浏览器本地，
-  不上传服务端。当前会话 id 另存 sessionStorage（关标签页即失效）。
-  回答气泡有两个操作：**复制**（Markdown 原文）和
-  **重试**——「重试」沿用当前会话重生成（保留前序记忆）；「换上下文」换新 id
-  重生成，服务端不带旧记忆（旧回答不会带偏，代价是前序轮次不再进入服务端记忆，
-  但前端对话记录仍显示）。两者都会丢弃该轮旧回答及其后消息。
-- **本地存档的隐私提示**：对话内容（提问与回答）会以明文保存在浏览器的 `localStorage`
-  中，最多 20 条、无自动过期。内容可能包含 tsm-hub 的 key 名、用量、成本等管理数据——
-  但**不含明文 Key**（`tsm_keys` 工具只返回前缀）。在共享或公用电脑上使用，同一浏览器的
-  下一位使用者可以看到这些历史，请避免在此类环境讨论敏感信息。清除方式：工具栏
-  「历史会话」下拉中逐条删除，或通过浏览器的「清除站点数据」一次性清空。若部署给多人
-  使用，建议各人使用独立的浏览器配置。
-- **安全边界**：端点有同源 + POST-only 校验（`chat_origin_ok`），跨域 POST 403；
-  但它不走 `?role=` 闸门——对外部署务必配 `HTPASSWD_FILE`（Basic Auth 全站生效，
-  会一并保护该端点），成本另由 Key 的额度兜底。LLM 凭据只在服务端，浏览器不可见。
+- **Model upstream**: `LLM_API_URL` (OpenAI-compatible, **must be the complete `/v1/chat/completions` endpoint** — the agent C layer POSTs this URL directly and appends nothing) + `LLM_API_KEY` + `LLM_MODEL` + `LLM_TIMEOUT`. In Docker the default is `http://tsm-hub:9070/v1/chat/completions`, with the key reusing `TSM_CLIENT_KEY` (mapped to `LLM_API_KEY` in compose); for local `make dev`, put it in the project-root `.env` (lume reads from the working directory). **An empty `LLM_API_KEY` means the built-in offline demo engine**, so you can develop/test offline at no cost. The container needs `curl` at runtime (the agent forks it to call the upstream), which is installed in the image.
+- **Read-only console tools**: `tsmhub_lume.lume` registers 5 read-only tools (overview / usage / routes / keys / provider_health) that the agent's ReAct loop can call to answer console questions such as "how many keys, how much spent today"; **no write permissions** — write operations still go through the `?role=` gate on `/api/*`.
+- **Router catalog sync**: `ROUTER_API_URL` (defaults to `LLM_API_URL`) points to tsm-hub's **base** (explicitly `http://tsm-hub:9070/v1` in compose, which appends `/v1/tools` etc.); at startup it syncs the upstream `GET /v1/tools` catalog as proxy tools (calls are forwarded to `POST /v1/tools/invoke`), with skills/MCPs mounted as well; local built-in/script tools win on name collisions. Note that it **cannot** be the same value as `LLM_API_URL` (the complete chat endpoint).
+- **Model selection**: the Agent page has a model dropdown populated live from the route names in `GET /api/routes` (i.e. those configured in the tsm-hub console); the default route with an empty model is not listed. The default `auto` sends no `model` field; selecting one adds `model` to the request body, and tsm-hub picks a provider by its route table and fails over. The server can optionally set `LLM_ALLOWED_MODELS` (comma-separated) to restrict which model names may be requested; empty means no restriction and the upstream decides — route-table changes need no edit here.
+- **Session memory & history**: the frontend generates a `sessionId` as `sess-<hex>`; the same id replays historical context server-side; the "New session" button swaps the id and clears it. After each turn the conversation is saved to browser localStorage (up to 20 entries), switchable/deletable via the "History" dropdown in the toolbar, and recoverable after a refresh or reopening the tab — archives stay in the browser only and are never uploaded. The current session id is kept separately in sessionStorage (invalid once the tab is closed). Each answer bubble has two actions: **Copy** (raw Markdown) and **Retry** — "Retry" regenerates in the current session (keeping prior memory); "Fresh context" uses a new id so the server has no old memory (old answers won't bias the new one, at the cost of prior turns no longer entering server-side memory, although the frontend transcript still shows them). Both discard the old answer for that turn and everything after it.
+- **Local archive privacy note**: conversation content (questions and answers) is stored in plaintext in the browser's `localStorage`, up to 20 entries with no automatic expiry. It may contain tsm-hub management data such as key names, usage, and costs — but **no plaintext keys** (the `tsm_keys` tool returns only prefixes). On a shared or public computer, the next user of the same browser profile can see these histories, so avoid discussing sensitive information in such environments. To clear them: delete entries one by one in the toolbar's "History" dropdown, or clear site data in the browser to wipe everything at once. If deploying for multiple people, recommend that each person use a separate browser profile.
+- **Security boundary**: the endpoint has same-origin + POST-only checks (`chat_origin_ok`), cross-origin POSTs get 403; it does not use the `?role=` gate — for external deployment be sure to configure `HTPASSWD_FILE` (Basic Auth is site-wide and protects this endpoint too), with cost further backed by the key's quota. LLM credentials stay server-side and are invisible to the browser.
 
-| 变量 | 默认（compose） | 说明 |
+| Variable | Default (compose) | Description |
 | --- | --- | --- |
-| `LLM_API_URL` | `http://tsm-hub:9070/v1/chat/completions` | agent 的 OpenAI 兼容上游（完整 chat 端点） |
-| `LLM_API_KEY` | 复用 `TSM_CLIENT_KEY` | 留空 = 离线演示引擎 |
-| `ROUTER_API_URL` | `http://tsm-hub:9070/v1` | router 目录同步的 base（拼 `/v1/tools` 等） |
-| `LLM_MODEL` | `auto` | 默认模型名（走 tsm-hub 路由表）；页面选中模型时覆盖 |
-| `LLM_ALLOWED_MODELS` | 空 | 可选：请求 `model` 覆盖白名单（逗号分隔）；留空 = 不限制，由 tsm-hub 裁决 |
-| `LLM_TIMEOUT` | `120` | 单次生成超时秒数 |
+| `LLM_API_URL` | `http://tsm-hub:9070/v1/chat/completions` | OpenAI-compatible upstream for the agent (complete chat endpoint) |
+| `LLM_API_KEY` | reuses `TSM_CLIENT_KEY` | empty = offline demo engine |
+| `ROUTER_API_URL` | `http://tsm-hub:9070/v1` | base for router catalog sync (appends `/v1/tools` etc.) |
+| `LLM_MODEL` | `auto` | default model name (via tsm-hub route table); overridden when a model is selected in the page |
+| `LLM_ALLOWED_MODELS` | empty | optional: whitelist for requested `model` overrides (comma-separated); empty = no restriction, decided by tsm-hub |
+| `LLM_TIMEOUT` | `120` | per-generation timeout in seconds |
 
-> 注意：这些变量由 agent-httpd 在 **C 层**直接读取，不经过 Lume 的 `env()`——
-> 所以名字里含 `API_KEY` 在这里**不会**被屏蔽（那条屏蔽规则只约束 DSL 里的
-> `env()` 调用）。
+> Note: these variables are read directly by agent-httpd at the **C layer**, bypassing Lume's `env()` — so names containing `API_KEY` are **not** masked here (that masking rule only applies to `env()` calls in the DSL).
 
-## 控制台页面
+## Console pages
 
-总览 / Providers / 余额 / 路由表 / Keys / 用量 / 模型 / 推荐 / 监控 / 审计 / 记忆 / 能力池（tools·skills·mcps·fastpath·a2a·sandbox·platforms，含调用/详情/增删/提升/删除/外部候选采纳/生成写操作）/ **Agent（lume 原生聊天，见上节）** / 测试 / 设置。
-深色主题、响应式侧栏、30 秒自动刷新上游健康状态。
+Overview / Providers / Balances / Route table / Keys / Usage / Models / Recommendations / Observability / Audit / Memory / Capabilities (tools·skills·mcps·fastpath·a2a·sandbox·platforms, including invoke/details/add-delete/promote/remove/external-candidate adoption/generate writes) / **Agent (native lume chat, see above)** / Test / Settings.
+Dark theme, responsive sidebar, upstream health refreshed automatically every 30 seconds.
 
 ## Docker
 
-容器里不需要宿主 Node：`Dockerfile` 两段构建，runtime 只有 alpine + lume 二进制
-（uid 10001，非 root），一个进程负责静态文件、SPA 回退和 `/api/*`。
-lume 二进制由 `make docker` 在**宿主侧**下载 tarball 并校验 SHA256。版本与
-校验和的**唯一数据源**是根目录 `lume.version`（当前 `v0.14.2`），Makefile、
-vendor 脚本、Dockerfile build-arg、CI 都从它读取，升级只改这一处。Dockerfile
-只 COPY + 用传入的 SHA 二次校验——构建期零网络依赖（VM 内 apk CDN / GitHub
-常被 TLS 重置），本机与 CI 行为一致。
+No host Node is needed in the container: the `Dockerfile` builds in two stages and the runtime is just alpine + the lume binary (uid 10001, non-root), with one process serving static files, SPA fallback, and `/api/*`.
+The lume binary is downloaded as a tarball and SHA256-verified on the **host** by `make docker`. The version and checksum have a **single source of truth** in the root `lume.version` (currently `v0.14.2`); the Makefile, vendor script, Dockerfile build-arg, and CI all read from it, so upgrading means editing one place. The Dockerfile only COPYs and re-verifies with the passed SHA — zero network dependency at build time (the apk CDN / GitHub in the VM are often TLS-reset), with consistent behavior locally and in CI.
 
 ```bash
 make docker        # → http://127.0.0.1:18108
@@ -340,13 +261,10 @@ make docker-logs
 docker compose down
 ```
 
-- 端口 **18108**（只发布到 `127.0.0.1`）。
-- 接入已有的 `tsm-hub_default` 网络，容器内用 `http://tsm-hub:9070` 访问上游
-  （tsm-hub 只把 9070 暴露在自己的容器网络里，宿主侧映射的 19070 在容器里够不着）。
-- 上游口令走挂载文件 `.data/admin.token`（`TSM_ADMIN_FILE`），不进镜像、不上命令行。
+- Port **18108** (published only to `127.0.0.1`).
+- Joins the existing `tsm-hub_default` network; inside the container the upstream is `http://tsm-hub:9070` (tsm-hub only exposes 9070 on its own container network; the host-side mapping on 19070 is not reachable from inside the container).
+- The upstream credential comes from the mounted file `.data/admin.token` (`TSM_ADMIN_FILE`), never baked into the image or placed on the command line.
 
-## 版本
+## Version
 
-`vendor/.vendor-stamp` 记录二进制版本与库来源。本地兄弟 checkout 存在时用它
-（本次实测：lume `0.14.2` + lume-core 工作树 `de7ce92`）；单独 clone 时从 GitHub
-release 拉 `LUME_VERSION` / `LUME_CORE_TAG`（默认取 `lume.version`，当前 `v0.14.2`）。
+`vendor/.vendor-stamp` records the binary version and library source. When a sibling checkout exists locally it is used (measured here: lume `0.14.2` + lume-core worktree `de7ce92`); a fresh clone fetches from the GitHub release using `LUME_VERSION` / `LUME_CORE_TAG` (defaulting to `lume.version`, currently `v0.14.2`).
