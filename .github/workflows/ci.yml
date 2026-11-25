@@ -35,7 +35,9 @@ jobs:
           path: |
             vendor/lume/bin/lume
             vendor/lume-core/lib
-          key: lume-vendor-${{ hashFiles('scripts/vendor_lume.sh') }}
+            vendor/.vendor-stamp
+          # lume.version 也进 key：版本升级后缓存自动失效，不会复用旧二进制/库。
+          key: lume-vendor-${{ hashFiles('scripts/vendor_lume.sh', 'lume.version') }}
 
       - name: 同步 lume 二进制 + lume-core（release fallback）
         run: make vendor

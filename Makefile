@@ -30,8 +30,11 @@ export LUME_VERSION LUME_SHA256
 # CDN 与 GitHub 都可能被重置）。
 LUME_LINUX_TGZ := vendor/lume/lume-linux-x64-static.tar.gz
 
+# vendor/lume/ 下的文件全部 gitignored，fresh checkout 里目录不存在；
+# 不先建目录 curl 会以 error 23（写文件失败）退出。
 $(LUME_LINUX_TGZ):
 	@echo "▶ 下载 lume $(LUME_VERSION) linux-x64-static（宿主侧）"
+	@mkdir -p "$(dir $@)"
 	curl -fsSL --http1.1 --retry 3 --retry-all-errors -C - -o $@ \
 	  "https://github.com/erishen/lume/releases/download/$(LUME_VERSION)/lume-linux-x64-static.tar.gz"
 	@echo "$(LUME_SHA256)  $@" | \
